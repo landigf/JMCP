@@ -1,0 +1,14 @@
+{
+  "name": "@jmcp/repo-guardrails",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Repository checks for JMCP",
+  "scripts": {
+    "lint": "biome check src test package.json tsconfig.json vitest.config.ts",
+    "test": "vitest run",
+    "check": "tsc --project tsconfig.json --noEmit && tsx src/cli.ts structure && tsx src/cli.ts freshness",
+    "docs:check": "tsx src/cli.ts docs",
+    "format": "biome format --write src test package.json tsconfig.json vitest.config.ts"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "jmcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Jarvis is My Co-Pilot",
+  "license": "Apache-2.0",
+  "packageManager": "npm@10.9.2",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "workspaces": [
+    "tooling/*"
+  ],
+  "scripts": {
+    "lint": "biome check . && turbo run lint",
+    "test": "turbo run test",
+    "check": "npm run docs:check && turbo run check",
+    "docs:check": "tsx tooling/repo-guardrails/src/cli.ts docs",
+    "format": "biome format --write . && turbo run format",
+    "quality:stub": "tsx tooling/repo-guardrails/src/cli.ts quality-stub"
+  },
+  "devDependencies": {
+    "@types/node": "^24.8.1",
+    "@biomejs/biome": "^2.3.7",
+    "turbo": "^2.5.8",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "lint": {
+      "outputs": []
+    },
+    "test": {
+      "outputs": []
+    },
+    "check": {
+      "outputs": []
+    },
+    "docs:check": {
+      "outputs": []
+    },
+    "format": {
+      "cache": false
+    }
+  }
+}
