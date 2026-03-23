@@ -70,6 +70,13 @@ export class ControlPlaneClient {
             url: event.artifact.url ?? null,
           }
         : undefined,
+      proposedTodo: event.proposedTodo
+        ? {
+            title: event.proposedTodo.title,
+            details: event.proposedTodo.details ?? null,
+            proposedFromTaskRunId: null,
+          }
+        : undefined,
       step: event.step,
       attempt: event.attempt,
       checkpointBundle: event.checkpointBundle,

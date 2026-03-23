@@ -30,6 +30,10 @@ export interface ExecutorProgressEvent {
   message: string
   branchName?: string
   artifact?: Omit<RunArtifact, "id" | "createdAt" | "taskRunId">
+  proposedTodo?: {
+    title: string
+    details: string | null
+  }
   step?: BridgeProgressEvent["step"]
   attempt?: BridgeProgressEvent["attempt"]
   checkpointBundle?: BridgeProgressEvent["checkpointBundle"]
@@ -118,6 +122,28 @@ function createRecapPrompt(objective: string, reviewSummary: string): string {
     `Objective: ${objective}`,
     "Turn the run into a compact mobile recap with status, what changed, what still needs attention, and next steps.",
     reviewSummary,
+  ].join("\n")
+}
+
+function createProposalPrompt(
+  objective: string,
+  reviewSummary: string,
+  recapSummary: string,
+): string {
+  return [
+    "You are the follow-up planner for JMCP.",
+    `Completed objective: ${objective}`,
+    "Based on the completed work, propose up to 3 useful follow-up tasks that would materially improve the repo.",
+    "Only include ideas that are concrete, bounded, and safe to queue as standalone TODOs.",
+    "Do not repeat the objective that was just completed.",
+    "Do not suggest vague polish, generic testing, or speculative work unless there is a clear repo-local next step.",
+    "Return strict JSON only. Use this exact shape:",
+    '[{"title":"Short actionable title","details":"Why this is useful and what it would change."}]',
+    "If there is nothing worth proposing, return [].",
+    "Review summary:",
+    reviewSummary,
+    "Recap summary:",
+    recapSummary,
   ].join("\n")
 }
 
@@ -237,6 +263,48 @@ async function runClaudeJson(args: {
   return {
     result: typeof response.result === "string" ? response.result : JSON.stringify(response.result),
     totalCostUsd: typeof response.total_cost_usd === "number" ? response.total_cost_usd : null,
+  }
+}
+
+function parseProposalList(raw: string): Array<{ title: string; details: string | null }> {
+  const trimmed = raw.trim()
+  const candidate = trimmed.startsWith("[")
+    ? trimmed
+    : trimmed.slice(trimmed.indexOf("["), trimmed.lastIndexOf("]") + 1)
+
+  if (!candidate || candidate[0] !== "[") {
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(candidate)
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+
+    return parsed
+      .map((entry) => {
+        if (
+          typeof entry === "object" &&
+          entry !== null &&
+          typeof entry.title === "string" &&
+          entry.title.trim()
+        ) {
+          return {
+            title: entry.title.trim().slice(0, 140),
+            details:
+              typeof entry.details === "string" && entry.details.trim()
+                ? entry.details.trim().slice(0, 500)
+                : null,
+          }
+        }
+
+        return null
+      })
+      .filter((entry): entry is { title: string; details: string | null } => entry !== null)
+      .slice(0, 3)
+  } catch {
+    return []
   }
 }
 
@@ -445,6 +513,7 @@ export class ClaudeCodeExecutor implements ExecutorAdapter {
       const prUrl = await this.#publishResult(task, repoDir, worktreeDir, branchName, review, emit)
 
       const recap = await this.#runRecapPass(task, worktreeDir, review, emit)
+      await this.#runProposalPass(task, worktreeDir, review, recap, emit)
       const bundlePath = await this.#writeBundle(
         task,
         worktreeDir,
@@ -774,6 +843,37 @@ export class ClaudeCodeExecutor implements ExecutorAdapter {
     })
 
     return result.result
+  }
+
+  async #runProposalPass(
+    task: AssignedTask,
+    worktreeDir: string,
+    reviewSummary: string,
+    recapSummary: string,
+    emit: (event: ExecutorProgressEvent) => Promise<void>,
+  ): Promise<void> {
+    const result = await runClaudeJson({
+      command: this.#config.JMCP_BRIDGE_CLAUDE_COMMAND,
+      cwd: worktreeDir,
+      prompt: createProposalPrompt(task.taskRun.objective, reviewSummary, recapSummary),
+      permissionMode: "plan",
+    })
+
+    const proposals = parseProposalList(result.result)
+
+    for (const proposal of proposals) {
+      await emit({
+        event: "task.progress",
+        message: `Captured follow-up proposal: ${proposal.title}`,
+        proposedTodo: proposal,
+        step: {
+          kind: "recap",
+          status: "completed",
+          title: "Follow-up proposal captured",
+          body: proposal.details,
+        },
+      })
+    }
   }
 
   async #publishResult(

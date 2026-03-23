@@ -110,6 +110,28 @@ function buildTelegramKeyboard(
     }
   }
 
+  if (notification.type === "project_update" && href) {
+    const parsed = href.match(/\/projects\/([^#]+)#todo-(.+)$/)
+    if (parsed) {
+      rows.push([
+        {
+          text: "Do now",
+          callback_data: `todo_proposal_now:${parsed[1]}:${parsed[2]}`,
+        },
+        {
+          text: "Overnight",
+          callback_data: `todo_proposal_overnight:${parsed[1]}:${parsed[2]}`,
+        },
+      ])
+      rows.push([
+        {
+          text: "Reject",
+          callback_data: `todo_proposal_reject:${parsed[1]}:${parsed[2]}`,
+        },
+      ])
+    }
+  }
+
   if (href && config.JMCP_PUBLIC_WEB_URL) {
     rows.push([
       {

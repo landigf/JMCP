@@ -2,6 +2,7 @@ import Link from "next/link"
 import { ProjectAutomationControls } from "../../../components/project-automation-controls"
 import { ProjectFeed } from "../../../components/project-feed"
 import { ProjectMessageForm } from "../../../components/project-message-form"
+import { ProposalActions } from "../../../components/proposal-actions"
 import { RunActions } from "../../../components/run-actions"
 import { SharePanel } from "../../../components/share-panel"
 import { TodoForm } from "../../../components/todo-form"
@@ -30,7 +31,12 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
   const blockedRuns = project.taskRuns.filter((run) =>
     ["blocked", "needs_approval"].includes(run.status),
   )
-  const readyTodos = project.todos.filter((todo) => ["queued", "ready"].includes(todo.status))
+  const pendingProposals = project.todos.filter(
+    (todo) => todo.source === "assistant" && todo.approvalStatus === "pending",
+  )
+  const readyTodos = project.todos.filter(
+    (todo) => todo.approvalStatus === "approved" && ["queued", "ready"].includes(todo.status),
+  )
 
   return (
     <main className="page-shell">
@@ -56,7 +62,7 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
             <span>Runs active</span>
           </div>
           <div className="metric-card">
-            <strong>{blockedRuns.length}</strong>
+            <strong>{blockedRuns.length + pendingProposals.length}</strong>
             <span>Need attention</span>
           </div>
         </div>
@@ -86,6 +92,34 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
 
         <div className="stack">
           <SharePanel projectId={project.project.id} projectName={project.project.name} />
+          <div className="panel stack-tight">
+            <div className="lane-header">
+              <h2>Proposed by JMCP</h2>
+              <span>{pendingProposals.length}</span>
+            </div>
+            {pendingProposals.length === 0 ? (
+              <p className="muted">
+                New improvement ideas discovered during runs will land here for your review.
+              </p>
+            ) : (
+              pendingProposals.map((todo) => (
+                <div className="todo-card todo-card-strong" id={`todo-${todo.id}`} key={todo.id}>
+                  <div className="event">
+                    <strong>{todo.title}</strong>
+                    <span>assistant proposal</span>
+                  </div>
+                  {todo.details ? <p>{todo.details}</p> : null}
+                  {todo.proposedFromTaskRunId ? (
+                    <p className="muted">
+                      Suggested during run {todo.proposedFromTaskRunId.slice(0, 8)}
+                    </p>
+                  ) : null}
+                  <ProposalActions projectId={project.project.id} todoId={todo.id} />
+                </div>
+              ))
+            )}
+          </div>
+
           <div className="panel stack-tight">
             <div className="lane-header">
               <h2>Do now</h2>

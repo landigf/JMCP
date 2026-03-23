@@ -24,6 +24,7 @@ export const todoStatusSchema = z.enum([
   "blocked",
   "cancelled",
 ])
+export const todoApprovalStatusSchema = z.enum(["approved", "pending", "rejected"])
 export const executorStatusSchema = z.enum(["online", "offline"])
 export const executorKindSchema = z.enum(["mock", "shell", "claude_code"])
 export const notificationChannelSchema = z.enum(["in_app", "web_push", "telegram"])
@@ -147,7 +148,9 @@ export const todoItemSchema = z.object({
   title: z.string(),
   details: z.string().nullable(),
   status: todoStatusSchema,
-  source: z.enum(["chat", "manual", "nightly", "telegram"]),
+  source: z.enum(["chat", "manual", "nightly", "telegram", "assistant"]),
+  approvalStatus: todoApprovalStatusSchema.default("approved"),
+  proposedFromTaskRunId: z.string().nullable().default(null),
   nightly: z.boolean(),
   runAfter: z.string().nullable(),
   createdAt: z.string(),
@@ -411,6 +414,14 @@ export const createTodoInputSchema = z.object({
   runAfter: z.string().nullable().default(null),
 })
 
+export const assistantProposalInputSchema = z.object({
+  title: z.string().min(1),
+  details: z.string().nullable().default(null),
+  proposedFromTaskRunId: z.string().nullable().default(null),
+})
+
+export const proposalDecisionSchema = z.enum(["now", "overnight", "reject"])
+
 export const createTodoResultSchema = z.object({
   todo: todoItemSchema.nullable(),
   created: z.boolean(),
@@ -534,6 +545,7 @@ export const bridgeProgressEventSchema = z.object({
   message: z.string().min(1),
   branchName: z.string().nullable().optional(),
   artifact: runArtifactSchema.omit({ id: true, createdAt: true, taskRunId: true }).optional(),
+  proposedTodo: assistantProposalInputSchema.optional(),
   step: bridgeStepEventSchema.optional(),
   attempt: bridgeAttemptEventSchema.optional(),
   checkpointBundle: bridgeCheckpointBundleInputSchema.optional(),
@@ -566,6 +578,7 @@ export const githubWebhookEnvelopeSchema = z.object({
 export type TaskIntentKind = z.infer<typeof taskIntentKindSchema>
 export type TaskRunStatus = z.infer<typeof taskRunStatusSchema>
 export type TodoStatus = z.infer<typeof todoStatusSchema>
+export type TodoApprovalStatus = z.infer<typeof todoApprovalStatusSchema>
 export type NotificationChannel = z.infer<typeof notificationChannelSchema>
 export type MergePolicy = z.infer<typeof mergePolicySchema>
 export type AutomationPolicy = z.infer<typeof automationPolicySchema>
@@ -599,6 +612,8 @@ export type ProjectMessageInput = z.infer<typeof projectMessageInputSchema>
 export type ProjectMessageResponse = z.infer<typeof projectMessageResponseSchema>
 export type CreateTodoInput = z.infer<typeof createTodoInputSchema>
 export type CreateTodoResult = z.infer<typeof createTodoResultSchema>
+export type AssistantProposalInput = z.infer<typeof assistantProposalInputSchema>
+export type ProposalDecision = z.infer<typeof proposalDecisionSchema>
 export type VoiceIngestInput = z.infer<typeof voiceIngestInputSchema>
 export type VoiceIngestResponse = z.infer<typeof voiceIngestResponseSchema>
 export type ApprovalAction = z.infer<typeof approvalActionSchema>

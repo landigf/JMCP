@@ -2,7 +2,17 @@
   "$schema": "https://biomejs.dev/schemas/2.4.8/schema.json",
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!node_modules", "!.turbo", "!coverage", "!dist", "!**/.next"]
+    "includes": [
+      "**",
+      "!node_modules",
+      "!.turbo",
+      "!coverage",
+      "!dist",
+      "!**/.next",
+      "!data",
+      "!services/control-plane/data",
+      "!services/local-bridge/data"
+    ]
   },
   "formatter": {
     "enabled": true,

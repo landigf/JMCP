@@ -133,6 +133,39 @@ export function createControlPlaneRuntime(config: ControlPlaneConfig) {
     return reply.code(201).send(run)
   })
 
+  app.post("/projects/:projectId/todos/:todoId/approve-now", async (request, reply) => {
+    const params = request.params as { projectId: string; todoId: string }
+    const todo = await service.reviewAssistantProposal(params.projectId, params.todoId, "now")
+
+    if (!todo) {
+      return reply.code(404).send({ message: "Proposal not found" })
+    }
+
+    return todo
+  })
+
+  app.post("/projects/:projectId/todos/:todoId/approve-overnight", async (request, reply) => {
+    const params = request.params as { projectId: string; todoId: string }
+    const todo = await service.reviewAssistantProposal(params.projectId, params.todoId, "overnight")
+
+    if (!todo) {
+      return reply.code(404).send({ message: "Proposal not found" })
+    }
+
+    return todo
+  })
+
+  app.post("/projects/:projectId/todos/:todoId/reject", async (request, reply) => {
+    const params = request.params as { projectId: string; todoId: string }
+    const todo = await service.reviewAssistantProposal(params.projectId, params.todoId, "reject")
+
+    if (!todo) {
+      return reply.code(404).send({ message: "Proposal not found" })
+    }
+
+    return todo
+  })
+
   app.post("/projects/:projectId/pause", async (request, reply) => {
     const params = request.params as { projectId: string }
     const policy = await service.pauseProject(params.projectId)

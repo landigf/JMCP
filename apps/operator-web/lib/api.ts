@@ -109,6 +109,57 @@ export async function runTodoNow(projectId: string, todoId: string): Promise<Tas
   return parseJsonResponse(response, "Failed to start TODO")
 }
 
+export async function approveProposalNow(projectId: string, todoId: string): Promise<void> {
+  const response = await fetch(
+    `${CONTROL_PLANE_URL}/projects/${projectId}/todos/${todoId}/approve-now`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    },
+  )
+
+  if (!response.ok) {
+    throw new Error("Failed to approve proposal")
+  }
+}
+
+export async function approveProposalOvernight(projectId: string, todoId: string): Promise<void> {
+  const response = await fetch(
+    `${CONTROL_PLANE_URL}/projects/${projectId}/todos/${todoId}/approve-overnight`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    },
+  )
+
+  if (!response.ok) {
+    throw new Error("Failed to move proposal to overnight")
+  }
+}
+
+export async function rejectProposal(projectId: string, todoId: string): Promise<void> {
+  const response = await fetch(
+    `${CONTROL_PLANE_URL}/projects/${projectId}/todos/${todoId}/reject`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    },
+  )
+
+  if (!response.ok) {
+    throw new Error("Failed to reject proposal")
+  }
+}
+
 export async function approveTaskRun(taskRunId: string): Promise<void> {
   const response = await fetch(`${CONTROL_PLANE_URL}/task-runs/${taskRunId}/approve`, {
     method: "POST",

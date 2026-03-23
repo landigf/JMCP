@@ -394,6 +394,30 @@ export class TelegramPollingBot {
         await this.#sendMessage(chatId, run ? `Queued run: ${run.objective}` : "TODO not found.")
         break
       }
+      case "todo_proposal_now": {
+        const todo = await this.#service.reviewAssistantProposal(projectId, entityId, "now")
+        await this.#sendMessage(
+          chatId,
+          todo ? `Proposal approved for execution: ${todo.title}` : "Proposal not found.",
+        )
+        break
+      }
+      case "todo_proposal_overnight": {
+        const todo = await this.#service.reviewAssistantProposal(projectId, entityId, "overnight")
+        await this.#sendMessage(
+          chatId,
+          todo ? `Proposal moved to overnight: ${todo.title}` : "Proposal not found.",
+        )
+        break
+      }
+      case "todo_proposal_reject": {
+        const todo = await this.#service.reviewAssistantProposal(projectId, entityId, "reject")
+        await this.#sendMessage(
+          chatId,
+          todo ? `Proposal rejected: ${todo.title}` : "Proposal not found.",
+        )
+        break
+      }
       case "run_retry": {
         const run = await this.#service.retryTaskRun(entityId)
         await this.#sendMessage(chatId, run ? `Retry queued: ${run.objective}` : "Run not found.")

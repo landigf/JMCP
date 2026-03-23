@@ -5,6 +5,7 @@ import path from "node:path"
 import { promisify } from "node:util"
 import type { ControlPlaneConfig } from "@jmcp/config"
 import {
+  type AssistantProposalInput,
   type AutomationPolicy,
   type BridgeHelloInput,
   type BridgeProgressEvent,
@@ -23,6 +24,7 @@ import {
   type ProjectMessageInput,
   type ProjectMessageResponse,
   type ProjectSummary,
+  type ProposalDecision,
   projectSchema,
   projectSummarySchema,
   type RepoSyncState,
@@ -92,6 +94,10 @@ function isTrackedTodoStatus(status: TodoItem["status"]): boolean {
 
 function isOpenTaskRunStatus(status: TaskRun["status"]): boolean {
   return openTaskRunStatuses.includes(status as (typeof openTaskRunStatuses)[number])
+}
+
+function isTrackedTodo(todo: TodoItem): boolean {
+  return todo.approvalStatus !== "rejected" && isTrackedTodoStatus(todo.status)
 }
 
 function createFeedEvent(
@@ -532,6 +538,140 @@ export class ControlPlaneService {
         duplicateTaskRunId: null,
         activeRunId,
       }
+    })
+  }
+
+  async createAssistantProposal(
+    projectId: string,
+    input: AssistantProposalInput,
+  ): Promise<TodoItem | null> {
+    const snapshot = await this.#store.getSnapshot()
+    const aggregate = this.#getProjectAggregate(snapshot, projectId)
+
+    if (!aggregate) {
+      return null
+    }
+
+    let createdNew = false
+
+    const created = await this.#store.mutate((draft) => {
+      const duplicateTodo = this.#findTrackedTodo(draft, projectId, input.title)
+      const duplicateRun = this.#findOpenTaskRun(draft, projectId, input.title)
+
+      if (duplicateTodo || duplicateRun) {
+        return duplicateTodo
+      }
+
+      const todo = this.#createTodoRecord(projectId, {
+        title: input.title,
+        details: input.details,
+        source: "assistant",
+        approvalStatus: "pending",
+        proposedFromTaskRunId: input.proposedFromTaskRunId,
+        nightly: false,
+        runAfter: null,
+      })
+
+      draft.todos.unshift(todo)
+      this.#feeds.publish(createFeedEvent("todo.created", projectId, todo))
+      createdNew = true
+      return todo
+    })
+
+    if (
+      !created ||
+      !createdNew ||
+      created.source !== "assistant" ||
+      created.approvalStatus !== "pending"
+    ) {
+      return created
+    }
+
+    const notification = notificationSchema.parse({
+      id: nanoid(),
+      projectId,
+      type: "project_update",
+      title: "JMCP proposed follow-up work",
+      body: created.title,
+      channel: "in_app",
+      href: `/projects/${projectId}#todo-${created.id}`,
+      createdAt: nowIso(),
+      readAt: null,
+    })
+
+    await this.#store.mutate((draft) => {
+      draft.notifications.unshift(notification)
+      this.#feeds.publish(createFeedEvent("notification.created", projectId, notification))
+    })
+
+    const refreshed = await this.#store.getSnapshot()
+    await this.#notifications.deliver(notification, refreshed)
+
+    return created
+  }
+
+  async reviewAssistantProposal(
+    projectId: string,
+    todoId: string,
+    decision: ProposalDecision,
+  ): Promise<TodoItem | null> {
+    const snapshot = await this.#store.getSnapshot()
+    const aggregate = this.#getProjectAggregate(snapshot, projectId)
+
+    if (!aggregate) {
+      return null
+    }
+
+    return this.#store.mutate((draft) => {
+      const todo = draft.todos.find((entry) => entry.id === todoId && entry.projectId === projectId)
+
+      if (!todo || todo.source !== "assistant") {
+        return null
+      }
+
+      const timestamp = nowIso()
+      todo.updatedAt = timestamp
+
+      if (decision === "reject") {
+        todo.approvalStatus = "rejected"
+        todo.status = "cancelled"
+        todo.nightly = false
+        this.#feeds.publish(createFeedEvent("todo.updated", projectId, todo))
+        return todo
+      }
+
+      todo.approvalStatus = "approved"
+
+      if (decision === "overnight") {
+        todo.nightly = true
+        todo.status = "queued"
+        this.#feeds.publish(createFeedEvent("todo.updated", projectId, todo))
+        return todo
+      }
+
+      todo.nightly = false
+      todo.status = "ready"
+      this.#feeds.publish(createFeedEvent("todo.updated", projectId, todo))
+
+      const duplicateRun =
+        draft.taskRuns.find(
+          (entry) =>
+            entry.projectId === projectId &&
+            isOpenTaskRunStatus(entry.status) &&
+            (entry.sourceTodoId === todo.id ||
+              normalizeWorkLabel(entry.objective) === normalizeWorkLabel(todo.title)),
+        ) ?? null
+
+      if (!duplicateRun) {
+        this.#queueTaskRun(draft, {
+          projectId,
+          sourceTodoId: todo.id,
+          objective: todo.title,
+          priority: 12,
+        })
+      }
+
+      return todo
     })
   }
 
@@ -1011,6 +1151,14 @@ export class ControlPlaneService {
       await this.#emitRunNotification(updatedRun, input.message, freshSnapshot)
     }
 
+    if (input.proposedTodo) {
+      await this.createAssistantProposal(updatedRun.projectId, {
+        title: input.proposedTodo.title,
+        details: input.proposedTodo.details ?? null,
+        proposedFromTaskRunId: updatedRun.id,
+      })
+    }
+
     return updatedRun
   }
 
@@ -1069,6 +1217,7 @@ export class ControlPlaneService {
 
         return (
           todo.nightly &&
+          todo.approvalStatus === "approved" &&
           todo.status === "queued" &&
           !snapshot.taskRuns.some(
             (run) =>
@@ -1301,7 +1450,7 @@ export class ControlPlaneService {
       snapshot.todos.find(
         (entry) =>
           entry.projectId === projectId &&
-          isTrackedTodoStatus(entry.status) &&
+          isTrackedTodo(entry) &&
           normalizeWorkLabel(entry.title) === normalizedTitle,
       ) ?? null
     )
@@ -1332,6 +1481,8 @@ export class ControlPlaneService {
       details: string | null
       nightly: boolean
       source: TodoItem["source"]
+      approvalStatus?: TodoItem["approvalStatus"]
+      proposedFromTaskRunId?: string | null
       runAfter: string | null
     },
   ): TodoItem {
@@ -1344,6 +1495,8 @@ export class ControlPlaneService {
       details: input.details,
       status: "queued",
       source: input.source,
+      approvalStatus: input.approvalStatus ?? "approved",
+      proposedFromTaskRunId: input.proposedFromTaskRunId ?? null,
       nightly: input.nightly,
       runAfter: input.runAfter,
       createdAt: timestamp,

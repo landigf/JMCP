@@ -144,4 +144,68 @@ describe("control plane service", () => {
       true,
     )
   })
+
+  it("stores assistant proposals as pending items and lets the operator approve them", async () => {
+    const service = await createService()
+    const project = await service.createProject({
+      name: "Jarvis",
+      githubOwner: "landigf",
+      githubRepo: "JMCP",
+      summary: "Operator workspace",
+      defaultBranch: "main",
+      nightlyEnabled: true,
+    })
+
+    const proposal = await service.createAssistantProposal(project.id, {
+      title: "Add a morning recap filter",
+      details: "Useful after the current recap flow landed.",
+      proposedFromTaskRunId: null,
+    })
+
+    expect(proposal?.source).toBe("assistant")
+    expect(proposal?.approvalStatus).toBe("pending")
+
+    const approved = await service.reviewAssistantProposal(project.id, proposal?.id ?? "", "now")
+    const summary = await service.getProjectSummary(project.id)
+
+    expect(approved?.approvalStatus).toBe("approved")
+    expect(
+      summary?.taskRuns.some((run) => run.sourceTodoId === proposal?.id && run.status === "queued"),
+    ).toBe(true)
+  })
+
+  it("creates a pending assistant proposal from a completed bridge event", async () => {
+    const service = await createService()
+    const project = await service.createProject({
+      name: "Jarvis",
+      githubOwner: "landigf",
+      githubRepo: "JMCP",
+      summary: "Operator workspace",
+      defaultBranch: "main",
+      nightlyEnabled: true,
+    })
+
+    const response = await service.postProjectMessage(project.id, {
+      text: "build the onboarding flow and open a draft pr",
+    })
+
+    await service.recordBridgeEvent({
+      token: "bridge-token",
+      executorId: "executor-1",
+      event: "task.result",
+      taskRunId: response?.createdTaskRunId ?? "",
+      message: "Run completed and result bundle prepared.",
+      proposedTodo: {
+        title: "Add a polished review drawer",
+        details: "The current recap exists, but a tighter review drawer would improve triage.",
+        proposedFromTaskRunId: null,
+      },
+    })
+
+    const summary = await service.getProjectSummary(project.id)
+    const proposal = summary?.todos.find((todo) => todo.title === "Add a polished review drawer")
+
+    expect(proposal?.source).toBe("assistant")
+    expect(proposal?.approvalStatus).toBe("pending")
+  })
 })
