@@ -1,13 +1,18 @@
 import type {
+  CreateEpicInput,
+  CreateProjectFromGithubInput,
   CreateProjectInput,
   CreateTodoInput,
   CreateTodoResult,
   DashboardSnapshot,
+  Epic,
+  EpicTask,
   Notification,
   Project,
   ProjectMessageInput,
   ProjectMessageResponse,
   ProjectSummary,
+  RepoCatalogEntry,
   RunDetail,
   TaskRun,
   VoiceIngestResponse,
@@ -44,6 +49,14 @@ export async function getInbox(): Promise<Notification[]> {
   return parseJsonResponse(response, "Failed to load inbox")
 }
 
+export async function getGitHubRepos(): Promise<RepoCatalogEntry[]> {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/github/repos`, {
+    cache: "no-store",
+  })
+
+  return parseJsonResponse(response, "Failed to load GitHub repos")
+}
+
 export async function getProject(projectId: string): Promise<ProjectSummary> {
   const response = await fetch(`${getControlPlaneBaseUrl()}/projects/${projectId}`, {
     cache: "no-store",
@@ -72,6 +85,20 @@ export async function createProject(input: CreateProjectInput): Promise<Project>
   return parseJsonResponse(response, "Failed to create project")
 }
 
+export async function createProjectFromGithub(
+  input: CreateProjectFromGithubInput,
+): Promise<Project> {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/projects/from-github`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(input),
+  })
+
+  return parseJsonResponse(response, "Failed to create project from GitHub")
+}
+
 export async function postProjectMessage(
   projectId: string,
   input: ProjectMessageInput,
@@ -85,6 +112,78 @@ export async function postProjectMessage(
   })
 
   return parseJsonResponse(response, "Failed to send message")
+}
+
+export async function createEpic(
+  projectId: string,
+  input: CreateEpicInput,
+): Promise<{ epic: Epic; tasks: EpicTask[] }> {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/projects/${projectId}/epics`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(input),
+  })
+
+  return parseJsonResponse(response, "Failed to create epic")
+}
+
+export async function runEpicTaskNow(
+  projectId: string,
+  epicId: string,
+  taskId: string,
+): Promise<EpicTask> {
+  const response = await fetch(
+    `${getControlPlaneBaseUrl()}/projects/${projectId}/epics/${epicId}/tasks/${taskId}/run`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    },
+  )
+
+  return parseJsonResponse(response, "Failed to run epic task")
+}
+
+export async function queueEpicTaskOvernight(
+  projectId: string,
+  epicId: string,
+  taskId: string,
+): Promise<EpicTask> {
+  const response = await fetch(
+    `${getControlPlaneBaseUrl()}/projects/${projectId}/epics/${epicId}/tasks/${taskId}/queue-overnight`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    },
+  )
+
+  return parseJsonResponse(response, "Failed to queue epic task overnight")
+}
+
+export async function rejectEpicTask(
+  projectId: string,
+  epicId: string,
+  taskId: string,
+): Promise<EpicTask> {
+  const response = await fetch(
+    `${getControlPlaneBaseUrl()}/projects/${projectId}/epics/${epicId}/tasks/${taskId}/reject`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    },
+  )
+
+  return parseJsonResponse(response, "Failed to reject epic task")
 }
 
 export async function createTodo(

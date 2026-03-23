@@ -38,8 +38,8 @@ export function ProjectMessageForm(props: { projectId: string }) {
       <div className="stack-tight">
         <h2>Project chat</h2>
         <p className="muted">
-          Ask a question, queue a TODO, or tell Jarvis to run something now. Mention “TODO” or
-          “overnight” when you want the intent classified that way.
+          Ask a question, queue a TODO, or hand Jarvis a much larger product idea. Long requests are
+          captured as epics and decomposed into do-now, overnight, and decision tasks automatically.
         </p>
       </div>
       <textarea
@@ -47,7 +47,7 @@ export function ProjectMessageForm(props: { projectId: string }) {
         onChange={(event) => {
           setValue(event.target.value)
         }}
-        placeholder="Example: TODO profile the bridge tonight and keep iterating until latency is under 200ms"
+        placeholder="Example: Build a real social network for sharing papers, handle ORCID, anonymity, discovery, and queue the complex pieces for overnight."
         rows={5}
         value={value}
       />

@@ -9,11 +9,17 @@ import {
   type AutomationPolicy,
   type BridgeHelloInput,
   type BridgeProgressEvent,
+  type CreateEpicInput,
+  type CreateProjectFromGithubInput,
   type CreateProjectInput,
   type CreateTodoInput,
   type CreateTodoResult,
   type DashboardSnapshot,
+  type Epic,
+  type EpicTask,
   type Executor,
+  epicSchema,
+  epicTaskSchema,
   type FeedEvent,
   type GitHubWebhookEnvelope,
   type MobileReply,
@@ -21,15 +27,19 @@ import {
   notificationSchema,
   type Project,
   type ProjectBrief,
+  type ProjectMemory,
   type ProjectMessageInput,
   type ProjectMessageResponse,
   type ProjectSummary,
   type ProposalDecision,
+  projectMemorySchema,
   projectSchema,
   projectSummarySchema,
+  type RepoCatalogEntry,
   type RepoSyncState,
   type RunArtifact,
   type RunDetail,
+  repoCatalogEntrySchema,
   runDetailSchema,
   type TaskRun,
   type TodoItem,
@@ -55,8 +65,199 @@ import type {
 
 const exec = promisify(execCallback)
 
+const JARVIS_TEMPLATE_NAME = "jarvis-managed-default"
+const JARVIS_TEMPLATE_VERSION = "2026-03-23b"
+const JARVIS_OPERATOR_DEFAULTS = [
+  "Jarvis writes the code and preserves existing repo conventions.",
+  "Large goals become epics with decomposed tasks instead of one giant TODO.",
+  "Complex or ambiguous work is queued for overnight or surfaced for approval.",
+  "Jarvis proposes bounded follow-up improvements explicitly instead of hiding them.",
+]
+const JARVIS_TEMPLATE_INSTRUCTIONS = [
+  "Coordinate all work through Jarvis project memory and queued tasks.",
+  "Prefer safe, production-ready changes with explicit validation commands.",
+  "Do not introduce secrets, unsafe crypto, or silent external side effects.",
+  "Keep the repo agent-friendly and propose AGENTS.md if it is missing.",
+]
+
+type RepoInspection = {
+  defaultBranch: string
+  repoUrl: string
+  description: string | null
+  isPrivate: boolean
+  stackProfile: string[]
+  testCommands: string[]
+  dangerousPaths: string[]
+  repoFacts: string[]
+  instructionSources: string[]
+  readmeExcerpt: string | null
+  hasAgentsGuide: boolean
+}
+
+type EpicTaskBlueprint = {
+  title: string
+  details: string | null
+  kind: "do_now" | "overnight" | "needs_decision" | "idea_from_jarvis"
+}
+
 function nowIso(): string {
   return new Date().toISOString()
+}
+
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value
+  }
+
+  return `${value.slice(0, maxLength - 1).trimEnd()}…`
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))]
+}
+
+function shouldCreateEpic(text: string): boolean {
+  const normalized = text.trim()
+  if (normalized.length >= 260) {
+    return true
+  }
+
+  const lower = normalized.toLowerCase()
+  return [
+    "idea of building",
+    "social network",
+    "revoluzion",
+    "allow login",
+    "anonymous publish",
+    "orcid",
+    "research id",
+    "architecture",
+    "workstream",
+  ].some((needle) => lower.includes(needle))
+}
+
+function createEpicTitle(project: Project, description: string): string {
+  const firstSentence = description.replace(/\s+/g, " ").split(/[.!?]/)[0]?.trim()
+
+  if (firstSentence) {
+    return truncateText(firstSentence, 96)
+  }
+
+  return `Jarvis epic for ${project.name}`
+}
+
+function createRepoSummary(
+  input: CreateProjectInput,
+  inspection: RepoInspection,
+  owner: string,
+  repo: string,
+): string {
+  const explicit = input.summary?.trim()
+  if (explicit) {
+    return explicit
+  }
+
+  if (inspection.description) {
+    return inspection.description
+  }
+
+  return `GitHub repo ${owner}/${repo}. Preserve existing conventions and ship safe, production-ready changes.`
+}
+
+function selectNodeTestCommands(
+  packageJson: {
+    scripts?: Record<string, string>
+  } | null,
+): string[] {
+  if (!packageJson?.scripts) {
+    return ["npm run test", "npm run check", "npm run lint"]
+  }
+
+  const preferred = ["test", "check", "lint", "build"]
+  return preferred
+    .filter((script) => packageJson.scripts?.[script])
+    .map((script) => `npm run ${script}`)
+}
+
+function buildGenericEpicBlueprints(project: Project, description: string): EpicTaskBlueprint[] {
+  return [
+    {
+      title: `Map architecture and execution plan for ${project.name}`,
+      details: truncateText(description, 400),
+      kind: "do_now",
+    },
+    {
+      title: `Implement the first safe slice for ${project.name}`,
+      details:
+        "Start with bounded repo-local work that unlocks the product direction without overcommitting to unresolved choices.",
+      kind: "overnight",
+    },
+    {
+      title: `Review unresolved product decisions for ${project.name}`,
+      details:
+        "Keep ambiguous or high-impact choices visible for operator approval instead of guessing.",
+      kind: "needs_decision",
+    },
+  ]
+}
+
+function buildPapersEpicBlueprints(_description: string): EpicTaskBlueprint[] {
+  return [
+    {
+      title: "Foundation and architecture for Papers",
+      details:
+        "Create the monorepo structure, global repo instructions, auth/data boundaries, and an execution-ready architecture for a full social paper-sharing product.",
+      kind: "do_now",
+    },
+    {
+      title: "Auth and profile system for Papers",
+      details:
+        "Ship the first profile and session flow with secure defaults, so researchers can create an account and prepare a public identity.",
+      kind: "do_now",
+    },
+    {
+      title: "ORCID linking for research identity",
+      details:
+        "Add ORCID-based identity linking so Papers can attach a real research identity when users want verified ownership.",
+      kind: "overnight",
+    },
+    {
+      title: "Paper publishing flow and metadata model",
+      details:
+        "Create the post/paper model, metadata capture, upload boundaries, and a creation flow that supports paper-first sharing instead of LinkedIn posts.",
+      kind: "overnight",
+    },
+    {
+      title: "Blind anonymous publication mode",
+      details:
+        "Support conference-safe anonymous sharing by hiding author identity everywhere publicly, scrubbing upload metadata, and keeping internal ownership private.",
+      kind: "overnight",
+    },
+    {
+      title: "Social feed and follow graph",
+      details:
+        "Implement the first social-network slice: follow researchers or interests, see a home feed, and surface paper activity clearly.",
+      kind: "overnight",
+    },
+    {
+      title: "Discovery and recommendation engine inspired by Broletter",
+      details:
+        "Use interest modeling and explanation-style recommendations to connect papers to the reader’s research interests and curiosity graph.",
+      kind: "idea_from_jarvis",
+    },
+    {
+      title: "Moderation, abuse prevention, and anonymity safety review",
+      details:
+        "Define moderation boundaries, abuse controls, and leak-prevention rules for blind submissions and identity protection.",
+      kind: "needs_decision",
+    },
+    {
+      title: "Deployment and observability plan for Papers",
+      details:
+        "Prepare deployment, storage, job execution, and observability choices without over-coupling the first product slice.",
+      kind: "idea_from_jarvis",
+    },
+  ]
 }
 
 function parsePullRequestNumber(url: string | null | undefined): number | null {
@@ -307,28 +508,60 @@ function createFeedEvent(
   }
 }
 
-function createDefaultBrief(projectId: string, summary: string): ProjectBrief {
+function createDefaultBrief(
+  projectId: string,
+  summary: string,
+  inspection: RepoInspection,
+): ProjectBrief {
   const timestamp = nowIso()
 
   return {
     id: nanoid(),
     projectId,
     summary,
-    codingNorms: [
+    codingNorms: dedupeStrings([
       "Preserve existing repo conventions before introducing new patterns.",
       "Prefer explicit validation, defensive defaults, and concise commits.",
       "Never introduce secrets, unsafe crypto, or silent network side effects.",
-    ],
-    testCommands: ["npm run test", "npm run check", "npm run lint"],
-    dangerousPaths: [".env", ".github/workflows", "infra", "secrets"],
+      ...JARVIS_TEMPLATE_INSTRUCTIONS,
+    ]),
+    testCommands: inspection.testCommands,
+    dangerousPaths: inspection.dangerousPaths,
     releaseConstraints: [
       "Open a PR with a concise summary.",
       "Run project checks before marking complete.",
       "Respect protected branch and required checks rules.",
     ],
+    stackProfile: inspection.stackProfile,
+    instructionSources: inspection.instructionSources,
     createdAt: timestamp,
     updatedAt: timestamp,
   }
+}
+
+function createProjectMemory(
+  projectId: string,
+  inspection: RepoInspection,
+  summary: string,
+): ProjectMemory {
+  const timestamp = nowIso()
+
+  return projectMemorySchema.parse({
+    id: nanoid(),
+    projectId,
+    templateName: JARVIS_TEMPLATE_NAME,
+    templateVersion: JARVIS_TEMPLATE_VERSION,
+    stackProfile: inspection.stackProfile,
+    repoFacts: dedupeStrings([summary, ...inspection.repoFacts]),
+    operatorDefaults: JARVIS_OPERATOR_DEFAULTS,
+    instructions: dedupeStrings([
+      ...JARVIS_TEMPLATE_INSTRUCTIONS,
+      `Default validation commands: ${inspection.testCommands.join(" | ")}`,
+    ]),
+    readmeExcerpt: inspection.readmeExcerpt,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  })
 }
 
 function createDefaultMergePolicy(projectId: string) {
@@ -396,13 +629,87 @@ export class ControlPlaneService {
     this.#config = args.config
   }
 
+  async listGitHubRepos(): Promise<RepoCatalogEntry[]> {
+    const { stdout: loginStdout } = await exec("gh api user --jq .login", {
+      env: {
+        ...process.env,
+        HOME: process.env.HOME ?? os.homedir(),
+      },
+      maxBuffer: 10 * 1024 * 1024,
+    })
+    const login = loginStdout.trim()
+    const { stdout } = await exec(
+      `gh repo list ${login} --limit 100 --json name,nameWithOwner,isPrivate,description,defaultBranchRef,url`,
+      {
+        env: {
+          ...process.env,
+          HOME: process.env.HOME ?? os.homedir(),
+        },
+        maxBuffer: 20 * 1024 * 1024,
+      },
+    )
+
+    const parsed = JSON.parse(stdout) as Array<{
+      name: string
+      nameWithOwner: string
+      isPrivate: boolean
+      description: string | null
+      defaultBranchRef: { name: string | null } | null
+      url: string
+    }>
+
+    return parsed
+      .map((entry) => {
+        const [owner, repo] = entry.nameWithOwner.split("/")
+        return repoCatalogEntrySchema.parse({
+          id: entry.nameWithOwner,
+          owner,
+          repo,
+          nameWithOwner: entry.nameWithOwner,
+          description: entry.description ?? null,
+          url: entry.url,
+          defaultBranch: entry.defaultBranchRef?.name || "main",
+          isPrivate: entry.isPrivate,
+        })
+      })
+      .sort((left, right) => left.nameWithOwner.localeCompare(right.nameWithOwner))
+  }
+
+  async createProjectFromGithub(input: CreateProjectFromGithubInput): Promise<Project> {
+    const inspection = await this.#inspectGitHubRepo(input.githubOwner, input.githubRepo)
+    return this.createProject({
+      name: input.name?.trim() || input.githubRepo,
+      githubOwner: input.githubOwner,
+      githubRepo: input.githubRepo,
+      summary: input.summary?.trim() || inspection.description || undefined,
+      defaultBranch: inspection.defaultBranch,
+      nightlyEnabled: input.nightlyEnabled,
+      repoUrl: inspection.repoUrl,
+    })
+  }
+
   async getDashboardSnapshot(): Promise<DashboardSnapshot> {
     const snapshot = await this.#store.getSnapshot()
+    const projectMemories = snapshot.projects.map((project) => {
+      const brief = snapshot.briefs.find((entry) => entry.projectId === project.id)
+      return this.#getProjectMemory(snapshot, project.id, project, brief ?? null)
+    })
+    const epicTasks = snapshot.epicTasks.map((entry) => this.#resolveEpicTask(snapshot, entry))
+    const epics = snapshot.epics.map((entry) =>
+      this.#resolveEpic(
+        snapshot,
+        entry,
+        epicTasks.filter((task) => task.epicId === entry.id),
+      ),
+    )
 
     return {
       projects: [...snapshot.projects].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
       briefs: snapshot.briefs,
+      projectMemories,
       automationPolicies: snapshot.automationPolicies,
+      epics: [...epics].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+      epicTasks: [...epicTasks].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
       todos: [...snapshot.todos].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
       taskRuns: [...snapshot.taskRuns].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
       notifications: [...snapshot.notifications].sort((a, b) =>
@@ -419,64 +726,91 @@ export class ControlPlaneService {
   }
 
   async createProject(input: CreateProjectInput): Promise<Project> {
-    return this.#store.mutate((snapshot) => {
-      const existing = snapshot.projects.find(
+    const existingSnapshot = await this.#store.getSnapshot()
+    const existing = existingSnapshot.projects.find(
+      (entry) =>
+        entry.githubOwner.toLowerCase() === input.githubOwner.toLowerCase() &&
+        entry.githubRepo.toLowerCase() === input.githubRepo.toLowerCase(),
+    )
+
+    if (existing) {
+      return existing
+    }
+
+    const inspection = await this.#inspectGitHubRepo(input.githubOwner, input.githubRepo)
+    const summary = createRepoSummary(input, inspection, input.githubOwner, input.githubRepo)
+
+    const project = await this.#store.mutate((snapshot) => {
+      const duplicate = snapshot.projects.find(
         (entry) =>
           entry.githubOwner.toLowerCase() === input.githubOwner.toLowerCase() &&
           entry.githubRepo.toLowerCase() === input.githubRepo.toLowerCase(),
       )
 
-      if (existing) {
-        return existing
+      if (duplicate) {
+        return duplicate
       }
 
       const timestamp = nowIso()
-      const project = projectSchema.parse({
+      const created = projectSchema.parse({
         id: nanoid(),
         name: input.name,
         githubOwner: input.githubOwner,
         githubRepo: input.githubRepo,
-        summary: input.summary,
-        defaultBranch: input.defaultBranch,
+        summary,
+        defaultBranch: inspection.defaultBranch || input.defaultBranch,
         nightlyEnabled: input.nightlyEnabled,
-        repoUrl: input.repoUrl ?? null,
+        repoUrl: input.repoUrl ?? inspection.repoUrl ?? null,
         createdAt: timestamp,
         updatedAt: timestamp,
       })
 
-      const brief = createDefaultBrief(project.id, input.summary)
-      const mergePolicy = createDefaultMergePolicy(project.id)
-      const automationPolicy = createDefaultAutomationPolicy(project.id, mergePolicy.id)
+      const brief = createDefaultBrief(created.id, summary, inspection)
+      const projectMemory = createProjectMemory(created.id, inspection, summary)
+      const mergePolicy = createDefaultMergePolicy(created.id)
+      const automationPolicy = createDefaultAutomationPolicy(created.id, mergePolicy.id)
       automationPolicy.nightlyEnabled = input.nightlyEnabled
 
-      snapshot.projects.unshift(project)
+      snapshot.projects.unshift(created)
       snapshot.briefs.unshift(brief)
+      snapshot.projectMemories.unshift(projectMemory)
       snapshot.mergePolicies.unshift(mergePolicy)
       snapshot.automationPolicies.unshift(automationPolicy)
-      snapshot.repoSyncStates.unshift(createDefaultRepoSyncState(project.id))
+      snapshot.repoSyncStates.unshift(createDefaultRepoSyncState(created.id))
       snapshot.conversations.push({
-        projectId: project.id,
+        projectId: created.id,
         messages: [
           {
             id: nanoid(),
-            projectId: project.id,
+            projectId: created.id,
             role: "system",
             kind: "text",
-            text: `Project created for ${project.githubOwner}/${project.githubRepo}.`,
+            text: `Project created for ${created.githubOwner}/${created.githubRepo}.`,
             createdAt: timestamp,
           },
         ],
       })
 
       this.#feeds.publish(
-        createFeedEvent("message.created", project.id, {
-          projectId: project.id,
+        createFeedEvent("message.created", created.id, {
+          projectId: created.id,
           kind: "project_created",
         }),
       )
 
-      return project
+      return created
     })
+
+    if (!inspection.hasAgentsGuide) {
+      await this.createAssistantProposal(project.id, {
+        title: "Add AGENTS.md for Jarvis-managed workflow",
+        details:
+          "This repo does not expose an AGENTS.md yet. Add one so future coding agents inherit the same project-specific guardrails automatically.",
+        proposedFromTaskRunId: null,
+      })
+    }
+
+    return project
   }
 
   async getProjectSummary(projectId: string): Promise<ProjectSummary | null> {
@@ -490,10 +824,13 @@ export class ControlPlaneService {
     return projectSummarySchema.parse({
       project: aggregate.project,
       brief: aggregate.brief,
+      projectMemory: aggregate.projectMemory,
       automationPolicy: aggregate.automationPolicy,
       mergePolicy: aggregate.mergePolicy,
       repoSyncState: aggregate.repoSyncState,
       conversation: aggregate.conversation,
+      epics: aggregate.epics,
+      epicTasks: aggregate.epicTasks,
       todos: aggregate.todos,
       taskRuns: aggregate.taskRuns,
       runSteps: aggregate.runSteps,
@@ -524,6 +861,332 @@ export class ControlPlaneService {
     })
   }
 
+  async createEpic(
+    projectId: string,
+    input: CreateEpicInput,
+    createdFromMessageId: string | null = null,
+  ): Promise<{ epic: Epic; tasks: EpicTask[] } | null> {
+    const snapshot = await this.#store.getSnapshot()
+    const aggregate = this.#getProjectAggregate(snapshot, projectId)
+
+    if (!aggregate) {
+      return null
+    }
+
+    const description = redactSecrets(input.description.trim())
+    const title = input.title?.trim() || createEpicTitle(aggregate.project, description)
+    const blueprints =
+      aggregate.project.githubRepo.toLowerCase() === "papers"
+        ? buildPapersEpicBlueprints(description)
+        : buildGenericEpicBlueprints(aggregate.project, description)
+
+    const notifications: Notification[] = []
+
+    const created = await this.#store.mutate((draft) => {
+      const timestamp = nowIso()
+      const policy = this.#getAutomationPolicy(draft, projectId)
+      const existingActiveRun = this.#findOpenTaskRun(draft, projectId)
+      let runScheduled = existingActiveRun !== null
+
+      const epic = epicSchema.parse({
+        id: nanoid(),
+        projectId,
+        title,
+        description,
+        status: "active",
+        source: input.source,
+        createdFromMessageId,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      })
+
+      const tasks = blueprints.map((blueprint) => {
+        const epicTask = epicTaskSchema.parse({
+          id: nanoid(),
+          epicId: epic.id,
+          projectId,
+          title: blueprint.title,
+          details: blueprint.details,
+          kind: blueprint.kind,
+          status: blueprint.kind === "needs_decision" ? "needs_decision" : "planned",
+          linkedTodoId: null,
+          linkedTaskRunId: null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        })
+
+        if (blueprint.kind === "needs_decision") {
+          notifications.push(
+            notificationSchema.parse({
+              id: nanoid(),
+              projectId,
+              type: "project_update",
+              title: `Decision needed: ${blueprint.title}`,
+              body:
+                blueprint.details ??
+                "Jarvis needs operator confirmation before moving this epic task.",
+              channel: "in_app",
+              href: `/projects/${projectId}#epic-task-${epicTask.id}`,
+              createdAt: timestamp,
+              readAt: null,
+            }),
+          )
+          return epicTask
+        }
+
+        const duplicateTodo = this.#findTrackedTodo(draft, projectId, blueprint.title)
+        const duplicateRun = this.#findOpenTaskRun(draft, projectId, blueprint.title)
+
+        if (duplicateRun) {
+          epicTask.linkedTaskRunId = duplicateRun.id
+          epicTask.linkedTodoId = duplicateRun.sourceTodoId
+          epicTask.status = "in_progress"
+          return epicTask
+        }
+
+        if (duplicateTodo) {
+          epicTask.linkedTodoId = duplicateTodo.id
+          epicTask.status =
+            duplicateTodo.source === "assistant" && duplicateTodo.approvalStatus === "pending"
+              ? "planned"
+              : duplicateTodo.status === "blocked"
+                ? "blocked"
+                : duplicateTodo.status === "done"
+                  ? "done"
+                  : "queued"
+          return epicTask
+        }
+
+        if (blueprint.kind === "idea_from_jarvis") {
+          const proposal = this.#createTodoRecord(projectId, {
+            title: blueprint.title,
+            details: blueprint.details,
+            source: "assistant",
+            approvalStatus: "pending",
+            proposedFromTaskRunId: null,
+            nightly: false,
+            runAfter: null,
+            systemNote: `Generated from epic "${epic.title}".`,
+          })
+          draft.todos.unshift(proposal)
+          this.#feeds.publish(createFeedEvent("todo.created", projectId, proposal))
+          epicTask.linkedTodoId = proposal.id
+          epicTask.status = "planned"
+          return epicTask
+        }
+
+        const nightly = blueprint.kind === "overnight"
+        const todo = this.#createTodoRecord(projectId, {
+          title: blueprint.title,
+          details: blueprint.details,
+          source: nightly ? "nightly" : "chat",
+          nightly,
+          runAfter: null,
+          systemNote: `Generated from epic "${epic.title}".`,
+        })
+
+        if (!nightly && policy?.autoRunOnTodo && !runScheduled) {
+          todo.status = "ready"
+          const run = this.#queueTaskRun(draft, {
+            projectId,
+            sourceTodoId: todo.id,
+            objective: todo.title,
+            priority: 18,
+          })
+          epicTask.linkedTaskRunId = run.id
+          runScheduled = true
+          epicTask.status = "in_progress"
+        } else {
+          epicTask.status = nightly ? "queued" : "queued"
+        }
+
+        draft.todos.unshift(todo)
+        this.#feeds.publish(createFeedEvent("todo.created", projectId, todo))
+        epicTask.linkedTodoId = todo.id
+        return epicTask
+      })
+
+      draft.epics.unshift(epic)
+      draft.epicTasks.unshift(...tasks)
+      return { epic, tasks }
+    })
+
+    if (notifications.length > 0) {
+      await this.#store.mutate((draft) => {
+        draft.notifications.unshift(...notifications)
+        for (const notification of notifications) {
+          this.#feeds.publish(createFeedEvent("notification.created", projectId, notification))
+        }
+      })
+      const refreshed = await this.#store.getSnapshot()
+      await Promise.all(
+        notifications.map((notification) => this.#notifications.deliver(notification, refreshed)),
+      )
+    }
+
+    return created
+  }
+
+  async getEpic(
+    projectId: string,
+    epicId: string,
+  ): Promise<{ epic: Epic; tasks: EpicTask[] } | null> {
+    const snapshot = await this.#store.getSnapshot()
+    const epic = snapshot.epics.find(
+      (entry) => entry.id === epicId && entry.projectId === projectId,
+    )
+
+    if (!epic) {
+      return null
+    }
+
+    const tasks = snapshot.epicTasks
+      .filter((entry) => entry.epicId === epicId && entry.projectId === projectId)
+      .map((entry) => this.#resolveEpicTask(snapshot, entry))
+
+    return {
+      epic: this.#resolveEpic(snapshot, epic, tasks),
+      tasks,
+    }
+  }
+
+  async runEpicTaskNow(
+    projectId: string,
+    epicId: string,
+    epicTaskId: string,
+  ): Promise<EpicTask | null> {
+    const snapshot = await this.#store.getSnapshot()
+    const epicTask = snapshot.epicTasks.find(
+      (entry) =>
+        entry.id === epicTaskId && entry.projectId === projectId && entry.epicId === epicId,
+    )
+
+    if (!epicTask) {
+      return null
+    }
+
+    if (epicTask.linkedTodoId) {
+      await this.runTodoNow(projectId, epicTask.linkedTodoId)
+    } else {
+      await this.#store.mutate((draft) => {
+        const task = draft.epicTasks.find((entry) => entry.id === epicTaskId)
+        const epic = draft.epics.find((entry) => entry.id === epicId)
+        if (!task || !epic) {
+          return
+        }
+
+        const todo = this.#createTodoRecord(projectId, {
+          title: task.title,
+          details: task.details,
+          source: "chat",
+          nightly: false,
+          runAfter: null,
+          systemNote: `Generated from epic "${epic.title}".`,
+        })
+        todo.status = "ready"
+        draft.todos.unshift(todo)
+        const run = this.#queueTaskRun(draft, {
+          projectId,
+          sourceTodoId: todo.id,
+          objective: todo.title,
+          priority: 14,
+        })
+        task.linkedTodoId = todo.id
+        task.linkedTaskRunId = run.id
+        task.status = "in_progress"
+        task.updatedAt = nowIso()
+        this.#feeds.publish(createFeedEvent("todo.created", projectId, todo))
+      })
+    }
+
+    const refreshed = await this.#store.getSnapshot()
+    const updated = refreshed.epicTasks.find((entry) => entry.id === epicTaskId)
+    return updated ? this.#resolveEpicTask(refreshed, updated) : null
+  }
+
+  async queueEpicTaskOvernight(
+    projectId: string,
+    epicId: string,
+    epicTaskId: string,
+  ): Promise<EpicTask | null> {
+    await this.#store.mutate((draft) => {
+      const task = draft.epicTasks.find(
+        (entry) =>
+          entry.id === epicTaskId && entry.projectId === projectId && entry.epicId === epicId,
+      )
+      const epic = draft.epics.find((entry) => entry.id === epicId)
+      if (!task || !epic) {
+        return
+      }
+
+      const linkedTodo = task.linkedTodoId
+        ? draft.todos.find((entry) => entry.id === task.linkedTodoId)
+        : null
+
+      if (linkedTodo) {
+        linkedTodo.nightly = true
+        linkedTodo.source = "nightly"
+        linkedTodo.status = linkedTodo.status === "done" ? "done" : "queued"
+        linkedTodo.updatedAt = nowIso()
+        task.status = linkedTodo.status === "done" ? "done" : "queued"
+        task.updatedAt = nowIso()
+        return
+      }
+
+      const todo = this.#createTodoRecord(projectId, {
+        title: task.title,
+        details: task.details,
+        source: "nightly",
+        nightly: true,
+        runAfter: null,
+        systemNote: `Generated from epic "${epic.title}".`,
+      })
+      draft.todos.unshift(todo)
+      task.linkedTodoId = todo.id
+      task.linkedTaskRunId = null
+      task.status = "queued"
+      task.updatedAt = nowIso()
+      this.#feeds.publish(createFeedEvent("todo.created", projectId, todo))
+    })
+
+    const refreshed = await this.#store.getSnapshot()
+    const updated = refreshed.epicTasks.find((entry) => entry.id === epicTaskId)
+    return updated ? this.#resolveEpicTask(refreshed, updated) : null
+  }
+
+  async rejectEpicTask(
+    projectId: string,
+    epicId: string,
+    epicTaskId: string,
+  ): Promise<EpicTask | null> {
+    await this.#store.mutate((draft) => {
+      const task = draft.epicTasks.find(
+        (entry) =>
+          entry.id === epicTaskId && entry.projectId === projectId && entry.epicId === epicId,
+      )
+      if (!task) {
+        return
+      }
+
+      task.status = "rejected"
+      task.updatedAt = nowIso()
+
+      const linkedTodo = task.linkedTodoId
+        ? draft.todos.find((entry) => entry.id === task.linkedTodoId)
+        : null
+
+      if (linkedTodo) {
+        linkedTodo.status = "cancelled"
+        linkedTodo.updatedAt = nowIso()
+        linkedTodo.systemNote = "Rejected from epic task review."
+      }
+    })
+
+    const refreshed = await this.#store.getSnapshot()
+    const updated = refreshed.epicTasks.find((entry) => entry.id === epicTaskId)
+    return updated ? this.#resolveEpicTask(refreshed, updated) : null
+  }
+
   async postProjectMessage(
     projectId: string,
     input: ProjectMessageInput,
@@ -539,28 +1202,112 @@ export class ControlPlaneService {
     const title = text.slice(0, 120) || "Voice note"
     const intent = classifyMessage(input)
     const executorAvailable = aggregate.executors.some((executor) => executor.status === "online")
+    const isEpic = shouldCreateEpic(text)
 
     let createdTodoId: string | null = null
     let createdTaskRunId: string | null = null
     let reply: MobileReply | null = null
+    let operatorMessageId: string | null = null
 
     await this.#store.mutate((draft) => {
-      const timestamp = nowIso()
+      const conversation = draft.conversations.find((entry) => entry.projectId === projectId)
+
+      if (!conversation) {
+        throw new Error("Project not found")
+      }
+
+      const messageId = nanoid()
+      conversation.messages.push({
+        id: messageId,
+        projectId,
+        role: "operator",
+        kind: input.voiceNote ? "voice_note" : "text",
+        text,
+        createdAt: nowIso(),
+      })
+      operatorMessageId = messageId
+    })
+
+    if (isEpic) {
+      const createdEpic = await this.createEpic(
+        projectId,
+        {
+          description: text,
+          source: "operator",
+        },
+        operatorMessageId,
+      )
+
+      if (!createdEpic) {
+        return null
+      }
+
+      createdTodoId = createdEpic.tasks.find((task) => task.linkedTodoId)?.linkedTodoId ?? null
+      createdTaskRunId =
+        createdEpic.tasks.find((task) => task.linkedTaskRunId)?.linkedTaskRunId ?? null
+      reply = {
+        status: "Epic captured and decomposed.",
+        whatChanged: [
+          `Jarvis stored ${createdEpic.epic.title} as an epic.`,
+          `Split it into ${createdEpic.tasks.length} project tasks.`,
+        ],
+        needsDecision: createdEpic.tasks
+          .filter((task) => task.kind === "needs_decision")
+          .map((task) => task.title)
+          .slice(0, 3),
+        next: [
+          "Run the immediate tasks now, let the overnight queue pick up the deeper work, and review any flagged decisions from the project page or Telegram.",
+        ],
+        links: [
+          {
+            label: "Open project",
+            href: `/projects/${projectId}`,
+          },
+        ],
+      }
+
+      await this.#store.mutate((draft) => {
+        const conversation = draft.conversations.find((entry) => entry.projectId === projectId)
+        if (!conversation) {
+          throw new Error("Project not found")
+        }
+
+        conversation.messages.push({
+          id: nanoid(),
+          projectId,
+          role: "assistant",
+          kind: "text",
+          text: JSON.stringify(reply),
+          createdAt: nowIso(),
+        })
+        this.#feeds.publish(
+          createFeedEvent("message.created", projectId, {
+            role: "assistant",
+            reply,
+          }),
+        )
+      })
+
+      return {
+        intent: {
+          kind: "save_todo",
+          confidence: 0.94,
+          summary: "Capture this as an epic and split it into executable work.",
+        },
+        reply,
+        createdTodoId,
+        createdTaskRunId,
+      }
+    }
+
+    await this.#store.mutate((draft) => {
       const conversation = draft.conversations.find((entry) => entry.projectId === projectId)
       const project = draft.projects.find((entry) => entry.id === projectId)
 
       if (!conversation || !project) {
         throw new Error("Project not found")
       }
-
-      conversation.messages.push({
-        id: nanoid(),
-        projectId,
-        role: "operator",
-        kind: input.voiceNote ? "voice_note" : "text",
-        text,
-        createdAt: timestamp,
-      })
+      const timestamp = nowIso()
 
       const duplicateTodo = this.#findTrackedTodo(draft, projectId, title)
       const duplicateRun = this.#findOpenTaskRun(draft, projectId, title)
@@ -1073,6 +1820,7 @@ export class ControlPlaneService {
     taskRun: TaskRun
     project: Project
     brief: ProjectBrief
+    projectMemory: ProjectMemory
     automationPolicy: AutomationPolicy
     mergePolicy: ProjectAggregate["mergePolicy"]
   } | null> {
@@ -1124,6 +1872,7 @@ export class ControlPlaneService {
         taskRun: run,
         project: aggregate.project,
         brief: aggregate.brief,
+        projectMemory: aggregate.projectMemory,
         automationPolicy: aggregate.automationPolicy,
         mergePolicy: aggregate.mergePolicy,
       }
@@ -1687,25 +2436,39 @@ export class ControlPlaneService {
     if (!project || !brief || !automationPolicy || !mergePolicy || !conversation) {
       return null
     }
+    const projectMemory = this.#getProjectMemory(snapshot, projectId, project, brief)
+
+    const taskRuns = snapshot.taskRuns.filter((entry) => entry.projectId === projectId)
+    const epicTasks = snapshot.epicTasks
+      .filter((entry) => entry.projectId === projectId)
+      .map((entry) => this.#resolveEpicTask(snapshot, entry))
+    const epics = snapshot.epics
+      .filter((entry) => entry.projectId === projectId)
+      .map((entry) =>
+        this.#resolveEpic(
+          snapshot,
+          entry,
+          epicTasks.filter((task) => task.epicId === entry.id),
+        ),
+      )
 
     return {
       project,
       brief,
+      projectMemory,
       automationPolicy,
       mergePolicy,
       repoSyncState: snapshot.repoSyncStates.find((entry) => entry.projectId === projectId) ?? null,
       conversation,
+      epics,
+      epicTasks,
       todos: snapshot.todos.filter((entry) => entry.projectId === projectId),
-      taskRuns: snapshot.taskRuns.filter((entry) => entry.projectId === projectId),
+      taskRuns,
       runSteps: snapshot.runSteps.filter((entry) =>
-        snapshot.taskRuns
-          .filter((run) => run.projectId === projectId)
-          .some((run) => run.id === entry.taskRunId),
+        taskRuns.some((run) => run.id === entry.taskRunId),
       ),
       artifacts: snapshot.artifacts.filter((entry) =>
-        snapshot.taskRuns
-          .filter((run) => run.projectId === projectId)
-          .some((run) => run.id === entry.taskRunId),
+        taskRuns.some((run) => run.id === entry.taskRunId),
       ),
       recaps: snapshot.recaps.filter((entry) => entry.projectId === projectId),
       approvals: snapshot.approvals.filter((entry) => entry.projectId === projectId),
@@ -1721,6 +2484,265 @@ export class ControlPlaneService {
     projectId: string,
   ): AutomationPolicy | undefined {
     return snapshot.automationPolicies.find((entry) => entry.projectId === projectId)
+  }
+
+  #getProjectMemory(
+    snapshot: Awaited<ReturnType<WorkspaceStore["getSnapshot"]>>,
+    projectId: string,
+    project: Project,
+    brief: ProjectBrief | null,
+  ): ProjectMemory {
+    const existing = snapshot.projectMemories.find((entry) => entry.projectId === projectId)
+    if (existing) {
+      return existing
+    }
+
+    return projectMemorySchema.parse({
+      id: `memory-${projectId}`,
+      projectId,
+      templateName: JARVIS_TEMPLATE_NAME,
+      templateVersion: JARVIS_TEMPLATE_VERSION,
+      stackProfile: brief?.stackProfile ?? [],
+      repoFacts: dedupeStrings([
+        project.summary,
+        `Default branch: ${project.defaultBranch}`,
+        `Repository: ${project.githubOwner}/${project.githubRepo}`,
+      ]),
+      operatorDefaults: JARVIS_OPERATOR_DEFAULTS,
+      instructions: JARVIS_TEMPLATE_INSTRUCTIONS,
+      readmeExcerpt: null,
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+    })
+  }
+
+  #resolveEpicTask(
+    snapshot: Awaited<ReturnType<WorkspaceStore["getSnapshot"]>>,
+    epicTask: EpicTask,
+  ): EpicTask {
+    const resolved: EpicTask = { ...epicTask }
+
+    if (epicTask.linkedTaskRunId) {
+      const run = snapshot.taskRuns.find((entry) => entry.id === epicTask.linkedTaskRunId)
+      if (run) {
+        resolved.status =
+          run.status === "completed"
+            ? "done"
+            : run.status === "blocked" || run.status === "needs_approval"
+              ? "blocked"
+              : run.status === "cancelled"
+                ? "cancelled"
+                : "in_progress"
+        return resolved
+      }
+    }
+
+    if (epicTask.linkedTodoId) {
+      const todo = snapshot.todos.find((entry) => entry.id === epicTask.linkedTodoId)
+      if (todo) {
+        if (todo.source === "assistant" && todo.approvalStatus === "pending") {
+          resolved.status = "planned"
+          return resolved
+        }
+
+        resolved.status =
+          todo.status === "done"
+            ? "done"
+            : todo.status === "blocked"
+              ? "blocked"
+              : todo.status === "cancelled"
+                ? epicTask.status === "rejected"
+                  ? "rejected"
+                  : "cancelled"
+                : todo.status === "in_progress"
+                  ? "in_progress"
+                  : "queued"
+        return resolved
+      }
+    }
+
+    if (resolved.kind === "needs_decision" && resolved.status === "planned") {
+      resolved.status = "needs_decision"
+    }
+
+    return resolved
+  }
+
+  #resolveEpic(
+    _snapshot: Awaited<ReturnType<WorkspaceStore["getSnapshot"]>>,
+    epic: Epic,
+    tasks: EpicTask[],
+  ): Epic {
+    const resolved: Epic = { ...epic }
+
+    if (tasks.length === 0) {
+      return resolved
+    }
+
+    if (tasks.every((task) => ["done", "cancelled", "rejected"].includes(task.status))) {
+      resolved.status = "completed"
+      return resolved
+    }
+
+    if (tasks.some((task) => task.status === "blocked")) {
+      resolved.status = "blocked"
+      return resolved
+    }
+
+    resolved.status = "active"
+    return resolved
+  }
+
+  async #inspectGitHubRepo(owner: string, repo: string): Promise<RepoInspection> {
+    const meta = await this.#readGitHubJson<{
+      default_branch: string
+      description: string | null
+      html_url: string
+      private: boolean
+    }>(`repos/${owner}/${repo}`)
+    const tree = await this.#readGitHubJson<{ tree?: Array<{ path: string }> } | null>(
+      `repos/${owner}/${repo}/git/trees/${meta.default_branch}?recursive=1`,
+      { allowFailure: true },
+    )
+    const paths = (tree?.tree ?? []).map((entry) => entry.path)
+    const lowered = paths.map((entry) => entry.toLowerCase())
+    const hasPath = (needle: string) => lowered.includes(needle.toLowerCase())
+    const hasPrefix = (needle: string) =>
+      lowered.some((entry) => entry.startsWith(`${needle.toLowerCase()}/`))
+
+    let packageJson: { scripts?: Record<string, string> } | null = null
+    if (hasPath("package.json")) {
+      packageJson = await this.#readGitHubFile<{ scripts?: Record<string, string> }>(
+        owner,
+        repo,
+        "package.json",
+        true,
+      )
+    }
+
+    const readme = await this.#readGitHubTextFile(owner, repo, "README.md", true)
+    const stackProfile: string[] = []
+    if (hasPath("package.json")) {
+      stackProfile.push("node")
+    }
+    if (hasPath("tsconfig.json") || hasPrefix("src") || hasPrefix("app")) {
+      stackProfile.push("typescript")
+    }
+    if (
+      hasPath("next.config.js") ||
+      hasPath("next.config.mjs") ||
+      hasPath("next.config.ts") ||
+      hasPrefix("app")
+    ) {
+      stackProfile.push("nextjs")
+    }
+    if (hasPath("requirements.txt") || hasPath("pyproject.toml")) {
+      stackProfile.push("python")
+    }
+    if (stackProfile.length === 0) {
+      stackProfile.push("unknown")
+    }
+
+    const dangerousPaths = dedupeStrings([
+      ".env",
+      hasPrefix(".github/workflows") ? ".github/workflows" : "",
+      hasPrefix("infra") ? "infra" : "",
+      hasPrefix("terraform") ? "terraform" : "",
+      hasPrefix("prisma") ? "prisma" : "",
+      hasPrefix("supabase") ? "supabase" : "",
+      "secrets",
+    ])
+
+    const repoFacts = dedupeStrings([
+      `Default branch: ${meta.default_branch}`,
+      meta.private ? "Visibility: private GitHub repo." : "Visibility: public GitHub repo.",
+      stackProfile[0] ? `Primary stack: ${stackProfile.join(", ")}` : "",
+      readme ? `README starts with: ${truncateText(readme.replace(/\s+/g, " "), 180)}` : "",
+    ])
+
+    return {
+      defaultBranch: meta.default_branch,
+      repoUrl: meta.html_url,
+      description: meta.description ?? null,
+      isPrivate: Boolean(meta.private),
+      stackProfile,
+      testCommands:
+        stackProfile.includes("node") || hasPath("package.json")
+          ? selectNodeTestCommands(packageJson)
+          : stackProfile.includes("python")
+            ? ["pytest", "python -m pytest"]
+            : ["npm run test", "npm run check", "npm run lint"],
+      dangerousPaths,
+      repoFacts,
+      instructionSources: dedupeStrings([
+        "jarvis-global-template",
+        readme ? "repo-readme" : "",
+        paths.length > 0 ? "repo-tree" : "",
+      ]),
+      readmeExcerpt: readme ? truncateText(readme.replace(/\s+/g, " "), 800) : null,
+      hasAgentsGuide: hasPath("AGENTS.md"),
+    }
+  }
+
+  async #readGitHubJson<T>(apiPath: string, options?: { allowFailure?: boolean }): Promise<T> {
+    try {
+      const safePath = apiPath.replaceAll("'", "'\\''")
+      const { stdout } = await exec(`gh api '${safePath}'`, {
+        env: {
+          ...process.env,
+          HOME: process.env.HOME ?? os.homedir(),
+        },
+        maxBuffer: 20 * 1024 * 1024,
+      })
+      return JSON.parse(stdout) as T
+    } catch (error) {
+      if (options?.allowFailure) {
+        return null as T
+      }
+      throw error
+    }
+  }
+
+  async #readGitHubTextFile(
+    owner: string,
+    repo: string,
+    filePath: string,
+    allowFailure = false,
+  ): Promise<string | null> {
+    try {
+      const safePath = `repos/${owner}/${repo}/contents/${filePath}`.replaceAll("'", "'\\''")
+      const { stdout } = await exec(
+        `gh api '${safePath}' --jq '.content' | tr -d '\\n' | base64 -d`,
+        {
+          env: {
+            ...process.env,
+            HOME: process.env.HOME ?? os.homedir(),
+          },
+          maxBuffer: 20 * 1024 * 1024,
+          shell: "/bin/zsh",
+        },
+      )
+      return stdout.trim() || null
+    } catch (error) {
+      if (allowFailure) {
+        return null
+      }
+      throw error
+    }
+  }
+
+  async #readGitHubFile<T>(
+    owner: string,
+    repo: string,
+    filePath: string,
+    allowFailure = false,
+  ): Promise<T | null> {
+    const raw = await this.#readGitHubTextFile(owner, repo, filePath, allowFailure)
+    if (!raw) {
+      return null
+    }
+
+    return JSON.parse(raw) as T
   }
 
   #findTrackedTodo(

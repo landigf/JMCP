@@ -9,6 +9,7 @@ import type {
   BridgeProgressEvent,
   Project,
   ProjectBrief,
+  ProjectMemory,
   RunArtifact,
 } from "@jmcp/contracts"
 
@@ -51,7 +52,12 @@ function slugify(input: string): string {
     .slice(0, 40)
 }
 
-function createPlanPrompt(project: Project, brief: ProjectBrief, objective: string): string {
+function createPlanPrompt(
+  project: Project,
+  brief: ProjectBrief,
+  projectMemory: ProjectMemory,
+  objective: string,
+): string {
   return [
     "You are the planner for JMCP.",
     `Repository: ${project.githubOwner}/${project.githubRepo}`,
@@ -60,6 +66,9 @@ function createPlanPrompt(project: Project, brief: ProjectBrief, objective: stri
     `Coding norms: ${brief.codingNorms.join(" | ")}`,
     `Dangerous paths: ${brief.dangerousPaths.join(" | ")}`,
     `Validation commands: ${brief.testCommands.join(" | ")}`,
+    `Jarvis template: ${projectMemory.templateName}@${projectMemory.templateVersion}`,
+    `Repo facts: ${projectMemory.repoFacts.join(" | ")}`,
+    `Operator defaults: ${projectMemory.operatorDefaults.join(" | ")}`,
     "Produce a concise actionable plan with files to inspect, implementation intent, and validation focus.",
     "Do not edit files in this pass.",
   ].join("\n")
@@ -68,6 +77,7 @@ function createPlanPrompt(project: Project, brief: ProjectBrief, objective: stri
 function createExecutorPrompt(
   project: Project,
   brief: ProjectBrief,
+  projectMemory: ProjectMemory,
   objective: string,
   planSummary: string,
 ): string {
@@ -79,6 +89,10 @@ function createExecutorPrompt(
     `Coding norms: ${brief.codingNorms.join(" | ")}`,
     `Dangerous paths: ${brief.dangerousPaths.join(" | ")}`,
     `Validation commands: ${brief.testCommands.join(" | ")}`,
+    `Jarvis template: ${projectMemory.templateName}@${projectMemory.templateVersion}`,
+    `Repo facts: ${projectMemory.repoFacts.join(" | ")}`,
+    `Operator defaults: ${projectMemory.operatorDefaults.join(" | ")}`,
+    `Project instructions: ${projectMemory.instructions.join(" | ")}`,
     "Requirements:",
     "- make the code changes directly in the current worktree",
     "- stay within repo-local changes only",
@@ -613,7 +627,12 @@ export class ClaudeCodeExecutor implements ExecutorAdapter {
     const planner = await runClaudeJson({
       command: this.#config.JMCP_BRIDGE_CLAUDE_COMMAND,
       cwd: worktreeDir,
-      prompt: createPlanPrompt(task.project, task.brief, task.taskRun.objective),
+      prompt: createPlanPrompt(
+        task.project,
+        task.brief,
+        task.projectMemory,
+        task.taskRun.objective,
+      ),
       permissionMode: "plan",
     })
 
@@ -674,7 +693,13 @@ export class ClaudeCodeExecutor implements ExecutorAdapter {
     const result = await runClaudeJson({
       command: this.#config.JMCP_BRIDGE_CLAUDE_COMMAND,
       cwd: worktreeDir,
-      prompt: createExecutorPrompt(task.project, task.brief, task.taskRun.objective, planSummary),
+      prompt: createExecutorPrompt(
+        task.project,
+        task.brief,
+        task.projectMemory,
+        task.taskRun.objective,
+        planSummary,
+      ),
       permissionMode: "bypassPermissions",
     })
 

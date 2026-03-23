@@ -1,4 +1,5 @@
 import Link from "next/link"
+import { EpicTaskActions } from "../../../components/epic-task-actions"
 import { ProjectAutomationControls } from "../../../components/project-automation-controls"
 import { ProjectFeed } from "../../../components/project-feed"
 import { ProjectMessageForm } from "../../../components/project-message-form"
@@ -40,6 +41,10 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
   const readyTodos = project.todos.filter(
     (todo) => todo.approvalStatus === "approved" && ["queued", "ready"].includes(todo.status),
   )
+  const epicGroups = project.epics.map((epic) => ({
+    epic,
+    tasks: project.epicTasks.filter((task) => task.epicId === epic.id),
+  }))
 
   return (
     <main className="page-shell">
@@ -87,6 +92,26 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
             paused={project.automationPolicy.paused}
             projectId={project.project.id}
           />
+          <div className="panel stack-tight">
+            <div className="lane-header">
+              <h2>Project memory</h2>
+              <span>{project.projectMemory.stackProfile.length}</span>
+            </div>
+            <p className="muted">
+              Template {project.projectMemory.templateName}@{project.projectMemory.templateVersion}
+            </p>
+            <ul className="list">
+              {project.projectMemory.repoFacts.slice(0, 5).map((fact) => (
+                <li key={fact}>{fact}</li>
+              ))}
+            </ul>
+            <p className="muted">
+              Validation:{" "}
+              {project.brief.testCommands.length > 0
+                ? project.brief.testCommands.join(" | ")
+                : "None inferred yet"}
+            </p>
+          </div>
           <ProjectMessageForm projectId={project.project.id} />
           <VoiceComposer projectId={project.project.id} />
           <TodoForm projectId={project.project.id} />
@@ -95,6 +120,51 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
 
         <div className="stack">
           <SharePanel projectId={project.project.id} projectName={project.project.name} />
+          <div className="panel stack-tight">
+            <div className="lane-header">
+              <h2>Epic breakdown</h2>
+              <span>{project.epics.length}</span>
+            </div>
+            {epicGroups.length === 0 ? (
+              <p className="muted">
+                Long product or architecture requests will appear here once Jarvis decomposes them.
+              </p>
+            ) : (
+              epicGroups.map(({ epic, tasks }) => (
+                <div className="todo-card" id={`epic-${epic.id}`} key={epic.id}>
+                  <div className="event">
+                    <strong>{epic.title}</strong>
+                    <span>{epic.status}</span>
+                  </div>
+                  <p>{epic.description}</p>
+                  <div className="stack-tight">
+                    {tasks.map((task) => (
+                      <div
+                        className="todo-card todo-card-strong"
+                        id={`epic-task-${task.id}`}
+                        key={task.id}
+                      >
+                        <div className="event">
+                          <strong>{task.title}</strong>
+                          <span>
+                            {task.kind.replaceAll("_", " ")} · {task.status}
+                          </span>
+                        </div>
+                        {task.details ? <p>{task.details}</p> : null}
+                        <EpicTaskActions
+                          epicId={epic.id}
+                          kind={task.kind}
+                          projectId={project.project.id}
+                          status={task.status}
+                          taskId={task.id}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
           <div className="panel stack-tight">
             <div className="lane-header">
               <h2>Proposed by Jarvis</h2>

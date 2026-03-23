@@ -28,6 +28,9 @@ export default async function HomePage() {
   const proposed = dashboard.todos
     .filter((todo) => todo.source === "assistant" && todo.approvalStatus === "pending")
     .slice(0, 6)
+  const epics = dashboard.epics
+    .filter((epic) => ["planned", "active", "blocked"].includes(epic.status))
+    .slice(0, 6)
   const mergedOvernight = dashboard.recaps
     .filter((recap) => recap.title.toLowerCase().includes("merged"))
     .slice(0, 4)
@@ -56,7 +59,7 @@ export default async function HomePage() {
             <span>Runs moving</span>
           </div>
           <div className="metric-card">
-            <strong>{blocked.length + proposed.length + blockedTodos.length}</strong>
+            <strong>{blocked.length + proposed.length + blockedTodos.length + epics.length}</strong>
             <span>Need a decision</span>
           </div>
         </div>
@@ -187,6 +190,30 @@ export default async function HomePage() {
 
         <div className="stack">
           <SharePanel projectId={websiteProject?.id} projectName={websiteProject?.name} />
+
+          <div className="panel stack-tight">
+            <div className="lane-header">
+              <h2>Active epics</h2>
+              <span>{epics.length}</span>
+            </div>
+            {epics.length === 0 ? (
+              <p className="muted">
+                Long product ideas and multi-workstream initiatives will show up here once Jarvis
+                has decomposed them.
+              </p>
+            ) : (
+              epics.map((epic) => (
+                <Link
+                  className="notification-card"
+                  href={`/projects/${epic.projectId}`}
+                  key={epic.id}
+                >
+                  <strong>{epic.title}</strong>
+                  <p>{epic.description}</p>
+                </Link>
+              ))
+            )}
+          </div>
 
           <div className="panel stack-tight">
             <div className="lane-header">

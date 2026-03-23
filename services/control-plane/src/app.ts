@@ -5,6 +5,8 @@ import {
   bridgeClaimInputSchema,
   bridgeHelloInputSchema,
   bridgeProgressEventSchema,
+  createEpicInputSchema,
+  createProjectFromGithubInputSchema,
   createProjectInputSchema,
   createTodoInputSchema,
   githubWebhookEnvelopeSchema,
@@ -70,9 +72,19 @@ export function createControlPlaneRuntime(config: ControlPlaneConfig) {
     return service.getInbox()
   })
 
+  app.get("/github/repos", async () => {
+    return service.listGitHubRepos()
+  })
+
   app.post("/projects", async (request, reply) => {
     const input = createProjectInputSchema.parse(request.body)
     const project = await service.createProject(input)
+    return reply.code(201).send(project)
+  })
+
+  app.post("/projects/from-github", async (request, reply) => {
+    const input = createProjectFromGithubInputSchema.parse(request.body)
+    const project = await service.createProjectFromGithub(input)
     return reply.code(201).send(project)
   })
 
@@ -108,6 +120,69 @@ export function createControlPlaneRuntime(config: ControlPlaneConfig) {
     }
 
     return result
+  })
+
+  app.post("/projects/:projectId/epics", async (request, reply) => {
+    const params = request.params as { projectId: string }
+    const input = createEpicInputSchema.parse(request.body)
+    const epic = await service.createEpic(params.projectId, input)
+
+    if (!epic) {
+      return reply.code(404).send({ message: "Project not found" })
+    }
+
+    return reply.code(201).send(epic)
+  })
+
+  app.get("/projects/:projectId/epics/:epicId", async (request, reply) => {
+    const params = request.params as { projectId: string; epicId: string }
+    const epic = await service.getEpic(params.projectId, params.epicId)
+
+    if (!epic) {
+      return reply.code(404).send({ message: "Epic not found" })
+    }
+
+    return epic
+  })
+
+  app.post("/projects/:projectId/epics/:epicId/tasks/:taskId/run", async (request, reply) => {
+    const params = request.params as { projectId: string; epicId: string; taskId: string }
+    const task = await service.runEpicTaskNow(params.projectId, params.epicId, params.taskId)
+
+    if (!task) {
+      return reply.code(404).send({ message: "Epic task not found" })
+    }
+
+    return task
+  })
+
+  app.post(
+    "/projects/:projectId/epics/:epicId/tasks/:taskId/queue-overnight",
+    async (request, reply) => {
+      const params = request.params as { projectId: string; epicId: string; taskId: string }
+      const task = await service.queueEpicTaskOvernight(
+        params.projectId,
+        params.epicId,
+        params.taskId,
+      )
+
+      if (!task) {
+        return reply.code(404).send({ message: "Epic task not found" })
+      }
+
+      return task
+    },
+  )
+
+  app.post("/projects/:projectId/epics/:epicId/tasks/:taskId/reject", async (request, reply) => {
+    const params = request.params as { projectId: string; epicId: string; taskId: string }
+    const task = await service.rejectEpicTask(params.projectId, params.epicId, params.taskId)
+
+    if (!task) {
+      return reply.code(404).send({ message: "Epic task not found" })
+    }
+
+    return task
   })
 
   app.post("/projects/:projectId/todos", async (request, reply) => {
@@ -326,6 +401,7 @@ export function createControlPlaneRuntime(config: ControlPlaneConfig) {
       taskRun: task.taskRun,
       project: task.project,
       brief: task.brief,
+      projectMemory: task.projectMemory,
       automationPolicy: task.automationPolicy,
       mergePolicy: task.mergePolicy,
     }

@@ -31,6 +31,9 @@ const controlPlaneEnvSchema = z.object({
   JMCP_VOICE_ASSET_DIR: z.string().optional(),
   JMCP_VOICE_TRANSCRIBE_COMMAND: z.string().optional(),
   JMCP_VOICE_TTS_COMMAND: z.string().optional(),
+  JMCP_XAI_API_KEY: z.string().optional(),
+  JMCP_XAI_MODEL: z.string().default("grok-4-0709"),
+  JMCP_XAI_BASE_URL: z.string().default("https://api.x.ai/v1"),
 })
 
 const webEnvSchema = z.object({

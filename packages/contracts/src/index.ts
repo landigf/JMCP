@@ -103,6 +103,17 @@ export const automationPolicySchema = z.object({
   updatedAt: z.string(),
 })
 
+export const repoCatalogEntrySchema = z.object({
+  id: z.string(),
+  owner: z.string(),
+  repo: z.string(),
+  nameWithOwner: z.string(),
+  description: z.string().nullable(),
+  url: z.string().url(),
+  defaultBranch: z.string(),
+  isPrivate: z.boolean(),
+})
+
 export const projectSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -124,6 +135,66 @@ export const projectBriefSchema = z.object({
   testCommands: z.array(z.string()),
   dangerousPaths: z.array(z.string()),
   releaseConstraints: z.array(z.string()),
+  stackProfile: z.array(z.string()).default([]),
+  instructionSources: z.array(z.string()).default([]),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+export const projectMemorySchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  templateName: z.string(),
+  templateVersion: z.string(),
+  stackProfile: z.array(z.string()),
+  repoFacts: z.array(z.string()),
+  operatorDefaults: z.array(z.string()),
+  instructions: z.array(z.string()),
+  readmeExcerpt: z.string().nullable().default(null),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+export const epicStatusSchema = z.enum(["planned", "active", "blocked", "completed", "cancelled"])
+export const epicTaskKindSchema = z.enum([
+  "do_now",
+  "overnight",
+  "needs_decision",
+  "idea_from_jarvis",
+])
+export const epicTaskStatusSchema = z.enum([
+  "planned",
+  "queued",
+  "in_progress",
+  "needs_decision",
+  "blocked",
+  "done",
+  "cancelled",
+  "rejected",
+])
+
+export const epicSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  title: z.string(),
+  description: z.string(),
+  status: epicStatusSchema,
+  source: z.enum(["operator", "jarvis"]),
+  createdFromMessageId: z.string().nullable().default(null),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+export const epicTaskSchema = z.object({
+  id: z.string(),
+  epicId: z.string(),
+  projectId: z.string(),
+  title: z.string(),
+  details: z.string().nullable(),
+  kind: epicTaskKindSchema,
+  status: epicTaskStatusSchema,
+  linkedTodoId: z.string().nullable().default(null),
+  linkedTaskRunId: z.string().nullable().default(null),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -325,9 +396,12 @@ export const pushSubscriptionRecordSchema = z.object({
 export const workspaceSnapshotSchema = z.object({
   projects: z.array(projectSchema),
   briefs: z.array(projectBriefSchema),
+  projectMemories: z.array(projectMemorySchema),
   mergePolicies: z.array(mergePolicySchema),
   automationPolicies: z.array(automationPolicySchema),
   conversations: z.array(projectConversationSchema),
+  epics: z.array(epicSchema),
+  epicTasks: z.array(epicTaskSchema),
   todos: z.array(todoItemSchema),
   taskRuns: z.array(taskRunSchema),
   runAttempts: z.array(runAttemptSchema),
@@ -347,10 +421,13 @@ export const workspaceSnapshotSchema = z.object({
 export const projectSummarySchema = z.object({
   project: projectSchema,
   brief: projectBriefSchema,
+  projectMemory: projectMemorySchema,
   automationPolicy: automationPolicySchema,
   mergePolicy: mergePolicySchema,
   repoSyncState: repoSyncStateSchema.nullable(),
   conversation: projectConversationSchema,
+  epics: z.array(epicSchema),
+  epicTasks: z.array(epicTaskSchema),
   todos: z.array(todoItemSchema),
   taskRuns: z.array(taskRunSchema),
   runSteps: z.array(runStepSchema),
@@ -372,7 +449,10 @@ export const runDetailSchema = z.object({
 export const dashboardSnapshotSchema = z.object({
   projects: z.array(projectSchema),
   briefs: z.array(projectBriefSchema),
+  projectMemories: z.array(projectMemorySchema),
   automationPolicies: z.array(automationPolicySchema),
+  epics: z.array(epicSchema),
+  epicTasks: z.array(epicTaskSchema),
   todos: z.array(todoItemSchema),
   taskRuns: z.array(taskRunSchema),
   notifications: z.array(notificationSchema),
@@ -384,10 +464,24 @@ export const createProjectInputSchema = z.object({
   name: z.string().min(1),
   githubOwner: z.string().min(1),
   githubRepo: z.string().min(1),
-  summary: z.string().min(1),
+  summary: z.string().min(1).optional(),
   defaultBranch: z.string().default("main"),
   nightlyEnabled: z.boolean().default(true),
   repoUrl: z.string().url().nullable().optional(),
+})
+
+export const createProjectFromGithubInputSchema = z.object({
+  githubOwner: z.string().min(1),
+  githubRepo: z.string().min(1),
+  name: z.string().min(1).optional(),
+  summary: z.string().min(1).optional(),
+  nightlyEnabled: z.boolean().default(true),
+})
+
+export const createEpicInputSchema = z.object({
+  title: z.string().min(1).optional(),
+  description: z.string().min(1),
+  source: z.enum(["operator", "jarvis"]).default("operator"),
 })
 
 export const voiceNoteInputSchema = z.object({
@@ -495,8 +589,15 @@ export const bridgeTaskAssignPayloadSchema = z.object({
   taskRun: taskRunSchema,
   project: projectSchema,
   brief: projectBriefSchema,
+  projectMemory: projectMemorySchema,
   automationPolicy: automationPolicySchema,
   mergePolicy: mergePolicySchema,
+})
+
+export const providerConfigSchema = z.object({
+  defaultTextProvider: z.enum(["disabled", "xai_grok"]),
+  xaiEnabled: z.boolean(),
+  xaiModel: z.string().nullable(),
 })
 
 export const bridgeNoopPayloadSchema = z.object({
@@ -584,8 +685,15 @@ export type NotificationChannel = z.infer<typeof notificationChannelSchema>
 export type MergePolicy = z.infer<typeof mergePolicySchema>
 export type AutomationPolicy = z.infer<typeof automationPolicySchema>
 export type MobileReply = z.infer<typeof mobileReplySchema>
+export type RepoCatalogEntry = z.infer<typeof repoCatalogEntrySchema>
 export type Project = z.infer<typeof projectSchema>
 export type ProjectBrief = z.infer<typeof projectBriefSchema>
+export type ProjectMemory = z.infer<typeof projectMemorySchema>
+export type EpicStatus = z.infer<typeof epicStatusSchema>
+export type EpicTaskKind = z.infer<typeof epicTaskKindSchema>
+export type EpicTaskStatus = z.infer<typeof epicTaskStatusSchema>
+export type Epic = z.infer<typeof epicSchema>
+export type EpicTask = z.infer<typeof epicTaskSchema>
 export type ConversationMessage = z.infer<typeof conversationMessageSchema>
 export type ProjectConversation = z.infer<typeof projectConversationSchema>
 export type TodoItem = z.infer<typeof todoItemSchema>
@@ -609,6 +717,8 @@ export type ProjectSummary = z.infer<typeof projectSummarySchema>
 export type RunDetail = z.infer<typeof runDetailSchema>
 export type DashboardSnapshot = z.infer<typeof dashboardSnapshotSchema>
 export type CreateProjectInput = z.infer<typeof createProjectInputSchema>
+export type CreateProjectFromGithubInput = z.infer<typeof createProjectFromGithubInputSchema>
+export type CreateEpicInput = z.infer<typeof createEpicInputSchema>
 export type ProjectMessageInput = z.infer<typeof projectMessageInputSchema>
 export type ProjectMessageResponse = z.infer<typeof projectMessageResponseSchema>
 export type CreateTodoInput = z.infer<typeof createTodoInputSchema>
@@ -627,3 +737,4 @@ export type BridgeProgressEvent = z.infer<typeof bridgeProgressEventSchema>
 export type BridgeAttemptEvent = z.infer<typeof bridgeAttemptEventSchema>
 export type BridgeStepEvent = z.infer<typeof bridgeStepEventSchema>
 export type GitHubWebhookEnvelope = z.infer<typeof githubWebhookEnvelopeSchema>
+export type ProviderConfig = z.infer<typeof providerConfigSchema>

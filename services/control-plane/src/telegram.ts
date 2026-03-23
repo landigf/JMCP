@@ -138,6 +138,15 @@ export class TelegramPollingBot {
     const remainder = text.slice(command.length).trim()
 
     switch (command) {
+      case "/repos":
+        await this.#sendRepos(chatId)
+        return
+      case "/open":
+        await this.#openProject(chatId, remainder)
+        return
+      case "/epic":
+        await this.#createEpic(chatId, remainder)
+        return
       case "/projects":
         await this.#sendProjects(chatId)
         return
@@ -165,9 +174,31 @@ export class TelegramPollingBot {
       default:
         await this.#sendMessage(
           chatId,
-          "Unknown command. Use /projects, /status, /run, /todo, /pause, /resume, /nightly, or /inbox.",
+          "Unknown command. Use /repos, /open, /epic, /projects, /status, /run, /todo, /pause, /resume, /nightly, or /inbox.",
         )
     }
+  }
+
+  async #sendRepos(chatId: string): Promise<void> {
+    const repos = await this.#service.listGitHubRepos()
+    if (repos.length === 0) {
+      await this.#sendMessage(chatId, "No GitHub repos available from the current laptop account.")
+      return
+    }
+
+    await this.#sendMessage(
+      chatId,
+      `GitHub repos\n${repos
+        .slice(0, 8)
+        .map((repo) => `• ${repo.nameWithOwner}`)
+        .join("\n")}`,
+      repos.slice(0, 6).map((repo) => [
+        {
+          text: `Open ${repo.repo.slice(0, 22)}`,
+          callback_data: `repo_open:${repo.owner}/${repo.repo}`,
+        },
+      ]),
+    )
   }
 
   async #sendProjects(chatId: string): Promise<void> {
@@ -183,6 +214,80 @@ export class TelegramPollingBot {
     })
 
     await this.#sendMessage(chatId, `Projects\n${lines.join("\n")}`)
+  }
+
+  async #openProject(chatId: string, remainder: string): Promise<void> {
+    const reference = remainder.trim()
+    if (!reference) {
+      await this.#sendMessage(chatId, "Usage: /open owner/repo")
+      return
+    }
+
+    const [githubOwner, githubRepo] = reference.split("/")
+    if (!githubOwner || !githubRepo) {
+      await this.#sendMessage(chatId, "Use owner/repo.")
+      return
+    }
+
+    const project = await this.#service.createProjectFromGithub({
+      githubOwner,
+      githubRepo,
+      nightlyEnabled: true,
+    })
+
+    await this.#sendMessage(chatId, `Opened ${project.githubOwner}/${project.githubRepo}.`, [
+      [
+        {
+          text: "Open Jarvis",
+          url: this.#buildProjectUrl(project.id),
+        },
+      ],
+    ])
+  }
+
+  async #createEpic(chatId: string, remainder: string): Promise<void> {
+    const [projectRef, ...descriptionParts] = remainder.split(/\s+/)
+    const description = descriptionParts.join(" ").trim()
+
+    if (!projectRef || !description) {
+      await this.#sendMessage(
+        chatId,
+        "Usage: /epic owner/repo your large product or architecture request",
+      )
+      return
+    }
+
+    const dashboard = await this.#service.getDashboardSnapshot()
+    const project = resolveProject(projectRef, dashboard.projects)
+    if (!project) {
+      await this.#sendMessage(chatId, `Project not found: ${projectRef}`)
+      return
+    }
+
+    const epic = await this.#service.createEpic(project.id, {
+      description,
+      source: "operator",
+    })
+
+    if (!epic) {
+      await this.#sendMessage(chatId, "Failed to create the epic.")
+      return
+    }
+
+    await this.#sendMessage(
+      chatId,
+      `Epic captured: ${epic.epic.title}\nTasks: ${epic.tasks.length}`,
+      epic.tasks.slice(0, 3).map((task) => [
+        {
+          text: `Now ${task.title.slice(0, 18)}`,
+          callback_data: `epic_run:${project.id}:${epic.epic.id}:${task.id}`,
+        },
+        {
+          text: "Overnight",
+          callback_data: `epic_overnight:${project.id}:${epic.epic.id}:${task.id}`,
+        },
+      ]),
+    )
   }
 
   async #sendInbox(chatId: string): Promise<void> {
@@ -210,9 +315,12 @@ export class TelegramPollingBot {
       const queued = dashboard.todos.filter((todo) =>
         ["queued", "ready"].includes(todo.status),
       ).length
+      const epics = dashboard.epics.filter((epic) =>
+        ["planned", "active", "blocked"].includes(epic.status),
+      ).length
       await this.#sendMessage(
         chatId,
-        `Workspace status\nRunning: ${running}\nBlocked: ${blocked}\nQueued TODOs: ${queued}`,
+        `Workspace status\nRunning: ${running}\nBlocked: ${blocked}\nQueued TODOs: ${queued}\nActive epics: ${epics}`,
       )
       return
     }
@@ -236,10 +344,13 @@ export class TelegramPollingBot {
     const blockedRuns = summary.taskRuns.filter((run) =>
       ["blocked", "needs_approval"].includes(run.status),
     )
+    const epicCount = summary.epics.filter((epic) =>
+      ["planned", "active", "blocked"].includes(epic.status),
+    ).length
 
     await this.#sendMessage(
       chatId,
-      `${summary.project.githubOwner}/${summary.project.githubRepo}\nQueued TODOs: ${queuedTodos.length}\nRunning: ${activeRuns.length}\nBlocked: ${blockedRuns.length}`,
+      `${summary.project.githubOwner}/${summary.project.githubRepo}\nQueued TODOs: ${queuedTodos.length}\nRunning: ${activeRuns.length}\nBlocked: ${blockedRuns.length}\nActive epics: ${epicCount}`,
       queuedTodos.slice(0, 3).map((todo) => [
         {
           text: `Run ${todo.title.slice(0, 24)}`,
@@ -386,9 +497,28 @@ export class TelegramPollingBot {
       return
     }
 
-    const [action, projectId, entityId] = data.split(":")
+    const [action, projectId, entityId, extraId] = data.split(":")
 
     switch (action) {
+      case "repo_open": {
+        const [owner, repo] = projectId.split("/")
+        if (owner && repo) {
+          const project = await this.#service.createProjectFromGithub({
+            githubOwner: owner,
+            githubRepo: repo,
+            nightlyEnabled: true,
+          })
+          await this.#sendMessage(chatId, `Opened ${project.githubOwner}/${project.githubRepo}.`, [
+            [
+              {
+                text: "Open Jarvis",
+                url: this.#buildProjectUrl(project.id),
+              },
+            ],
+          ])
+        }
+        break
+      }
       case "todo_run": {
         const run = await this.#service.runTodoNow(projectId, entityId)
         await this.#sendMessage(chatId, run ? `Queued run: ${run.objective}` : "TODO not found.")
@@ -436,6 +566,30 @@ export class TelegramPollingBot {
       case "project_resume": {
         await this.#service.resumeProject(projectId)
         await this.#sendMessage(chatId, "Project resumed.")
+        break
+      }
+      case "epic_run": {
+        const task = await this.#service.runEpicTaskNow(projectId, entityId, extraId)
+        await this.#sendMessage(
+          chatId,
+          task ? `Epic task queued: ${task.title}` : "Epic task not found.",
+        )
+        break
+      }
+      case "epic_overnight": {
+        const task = await this.#service.queueEpicTaskOvernight(projectId, entityId, extraId)
+        await this.#sendMessage(
+          chatId,
+          task ? `Epic task moved to overnight: ${task.title}` : "Epic task not found.",
+        )
+        break
+      }
+      case "epic_reject": {
+        const task = await this.#service.rejectEpicTask(projectId, entityId, extraId)
+        await this.#sendMessage(
+          chatId,
+          task ? `Epic task rejected: ${task.title}` : "Epic task not found.",
+        )
         break
       }
       default:

@@ -13,9 +13,12 @@ type PersistedRow = {
 interface WorkspaceDatabase {
   projects: PersistedRow
   briefs: PersistedRow
+  project_memories: PersistedRow
   merge_policies: PersistedRow
   automation_policies: PersistedRow
   conversations: PersistedRow
+  epics: PersistedRow
+  epic_tasks: PersistedRow
   todos: PersistedRow
   task_runs: PersistedRow
   run_attempts: PersistedRow
@@ -43,9 +46,12 @@ type TableConfig = {
 const tableConfigs: TableConfig[] = [
   { collection: "projects", table: "projects", getId: getEntityId },
   { collection: "briefs", table: "briefs", getId: getEntityId },
+  { collection: "projectMemories", table: "project_memories", getId: getEntityId },
   { collection: "mergePolicies", table: "merge_policies", getId: getEntityId },
   { collection: "automationPolicies", table: "automation_policies", getId: getEntityId },
   { collection: "conversations", table: "conversations", getId: getConversationId },
+  { collection: "epics", table: "epics", getId: getEntityId },
+  { collection: "epicTasks", table: "epic_tasks", getId: getEntityId },
   { collection: "todos", table: "todos", getId: getEntityId },
   { collection: "taskRuns", table: "task_runs", getId: getEntityId },
   { collection: "runAttempts", table: "run_attempts", getId: getEntityId },
@@ -66,9 +72,12 @@ function emptySnapshot(): WorkspaceSnapshot {
   return workspaceSnapshotSchema.parse({
     projects: [],
     briefs: [],
+    projectMemories: [],
     mergePolicies: [],
     automationPolicies: [],
     conversations: [],
+    epics: [],
+    epicTasks: [],
     todos: [],
     taskRuns: [],
     runAttempts: [],

@@ -2,12 +2,15 @@ import type {
   ApprovalRequest,
   AutomationPolicy,
   ConversationMessage,
+  Epic,
+  EpicTask,
   Executor,
   FeedEvent,
   Notification,
   Project,
   ProjectBrief,
   ProjectConversation,
+  ProjectMemory,
   PushSubscriptionRecord,
   Recap,
   RepoSyncState,
@@ -45,10 +48,13 @@ export interface TaskLifecycleHooks {
 export interface ProjectAggregate {
   project: Project
   brief: ProjectBrief
+  projectMemory: ProjectMemory
   automationPolicy: AutomationPolicy
   mergePolicy: WorkspaceSnapshot["mergePolicies"][number]
   repoSyncState: RepoSyncState | null
   conversation: ProjectConversation
+  epics: Epic[]
+  epicTasks: EpicTask[]
   todos: TodoItem[]
   taskRuns: TaskRun[]
   runSteps: RunStep[]

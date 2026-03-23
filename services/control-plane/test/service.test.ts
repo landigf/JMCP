@@ -314,4 +314,27 @@ describe("control plane service", () => {
     expect(blockedTodos).toHaveLength(2)
     expect(conflictNotice).toBeTruthy()
   })
+
+  it("turns a large Papers request into an epic with decomposed tasks", async () => {
+    const service = await createService()
+    const project = await service.createProject({
+      name: "Papers",
+      githubOwner: "landigf",
+      githubRepo: "Papers",
+      summary: "Paper-sharing social network",
+      defaultBranch: "main",
+      nightlyEnabled: true,
+    })
+
+    const response = await service.postProjectMessage(project.id, {
+      text: "I had this idea of building Paper, it’s like a social network for sharing papers, allow login, support ORCID, allow anonymous publication for conference submissions, and create discovery connected to my interests like Broletter. Start with the easy tasks now and queue the complex things for overnight.",
+    })
+
+    const summary = await service.getProjectSummary(project.id)
+
+    expect(response?.reply.status).toBe("Epic captured and decomposed.")
+    expect(summary?.epics.length).toBeGreaterThan(0)
+    expect(summary?.epicTasks.length).toBeGreaterThan(4)
+    expect(summary?.todos.some((todo) => todo.title.includes("ORCID"))).toBe(true)
+  })
 })
