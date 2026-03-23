@@ -14,6 +14,11 @@ import type {
 } from "@jmcp/contracts"
 
 const CONTROL_PLANE_URL = process.env.NEXT_PUBLIC_CONTROL_PLANE_URL ?? "http://127.0.0.1:4000"
+const CONTROL_PLANE_PROXY_PATH = "/api/control-plane"
+
+function getControlPlaneBaseUrl(): string {
+  return typeof window === "undefined" ? CONTROL_PLANE_URL : CONTROL_PLANE_PROXY_PATH
+}
 
 async function parseJsonResponse<T>(response: Response, fallback: string): Promise<T> {
   if (!response.ok) {
@@ -24,7 +29,7 @@ async function parseJsonResponse<T>(response: Response, fallback: string): Promi
 }
 
 export async function getDashboard(): Promise<DashboardSnapshot> {
-  const response = await fetch(`${CONTROL_PLANE_URL}/dashboard`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/dashboard`, {
     cache: "no-store",
   })
 
@@ -32,7 +37,7 @@ export async function getDashboard(): Promise<DashboardSnapshot> {
 }
 
 export async function getInbox(): Promise<Notification[]> {
-  const response = await fetch(`${CONTROL_PLANE_URL}/notifications/inbox`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/notifications/inbox`, {
     cache: "no-store",
   })
 
@@ -40,7 +45,7 @@ export async function getInbox(): Promise<Notification[]> {
 }
 
 export async function getProject(projectId: string): Promise<ProjectSummary> {
-  const response = await fetch(`${CONTROL_PLANE_URL}/projects/${projectId}`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/projects/${projectId}`, {
     cache: "no-store",
   })
 
@@ -48,7 +53,7 @@ export async function getProject(projectId: string): Promise<ProjectSummary> {
 }
 
 export async function getRunDetail(projectId: string, runId: string): Promise<RunDetail> {
-  const response = await fetch(`${CONTROL_PLANE_URL}/projects/${projectId}/runs/${runId}`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/projects/${projectId}/runs/${runId}`, {
     cache: "no-store",
   })
 
@@ -56,7 +61,7 @@ export async function getRunDetail(projectId: string, runId: string): Promise<Ru
 }
 
 export async function createProject(input: CreateProjectInput): Promise<Project> {
-  const response = await fetch(`${CONTROL_PLANE_URL}/projects`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/projects`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -71,7 +76,7 @@ export async function postProjectMessage(
   projectId: string,
   input: ProjectMessageInput,
 ): Promise<ProjectMessageResponse> {
-  const response = await fetch(`${CONTROL_PLANE_URL}/projects/${projectId}/messages`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/projects/${projectId}/messages`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -86,7 +91,7 @@ export async function createTodo(
   projectId: string,
   input: CreateTodoInput,
 ): Promise<CreateTodoResult> {
-  const response = await fetch(`${CONTROL_PLANE_URL}/projects/${projectId}/todos`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/projects/${projectId}/todos`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -98,20 +103,23 @@ export async function createTodo(
 }
 
 export async function runTodoNow(projectId: string, todoId: string): Promise<TaskRun> {
-  const response = await fetch(`${CONTROL_PLANE_URL}/projects/${projectId}/todos/${todoId}/run`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
+  const response = await fetch(
+    `${getControlPlaneBaseUrl()}/projects/${projectId}/todos/${todoId}/run`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
     },
-    body: JSON.stringify({}),
-  })
+  )
 
   return parseJsonResponse(response, "Failed to start TODO")
 }
 
 export async function approveProposalNow(projectId: string, todoId: string): Promise<void> {
   const response = await fetch(
-    `${CONTROL_PLANE_URL}/projects/${projectId}/todos/${todoId}/approve-now`,
+    `${getControlPlaneBaseUrl()}/projects/${projectId}/todos/${todoId}/approve-now`,
     {
       method: "POST",
       headers: {
@@ -128,7 +136,7 @@ export async function approveProposalNow(projectId: string, todoId: string): Pro
 
 export async function approveProposalOvernight(projectId: string, todoId: string): Promise<void> {
   const response = await fetch(
-    `${CONTROL_PLANE_URL}/projects/${projectId}/todos/${todoId}/approve-overnight`,
+    `${getControlPlaneBaseUrl()}/projects/${projectId}/todos/${todoId}/approve-overnight`,
     {
       method: "POST",
       headers: {
@@ -145,7 +153,7 @@ export async function approveProposalOvernight(projectId: string, todoId: string
 
 export async function rejectProposal(projectId: string, todoId: string): Promise<void> {
   const response = await fetch(
-    `${CONTROL_PLANE_URL}/projects/${projectId}/todos/${todoId}/reject`,
+    `${getControlPlaneBaseUrl()}/projects/${projectId}/todos/${todoId}/reject`,
     {
       method: "POST",
       headers: {
@@ -161,7 +169,7 @@ export async function rejectProposal(projectId: string, todoId: string): Promise
 }
 
 export async function approveTaskRun(taskRunId: string): Promise<void> {
-  const response = await fetch(`${CONTROL_PLANE_URL}/task-runs/${taskRunId}/approve`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/task-runs/${taskRunId}/approve`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -175,7 +183,7 @@ export async function approveTaskRun(taskRunId: string): Promise<void> {
 }
 
 export async function cancelTaskRun(taskRunId: string): Promise<void> {
-  const response = await fetch(`${CONTROL_PLANE_URL}/task-runs/${taskRunId}/cancel`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/task-runs/${taskRunId}/cancel`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -189,7 +197,7 @@ export async function cancelTaskRun(taskRunId: string): Promise<void> {
 }
 
 export async function retryTaskRun(taskRunId: string): Promise<TaskRun> {
-  const response = await fetch(`${CONTROL_PLANE_URL}/task-runs/${taskRunId}/retry`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/task-runs/${taskRunId}/retry`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -201,7 +209,7 @@ export async function retryTaskRun(taskRunId: string): Promise<TaskRun> {
 }
 
 export async function pauseProject(projectId: string): Promise<void> {
-  const response = await fetch(`${CONTROL_PLANE_URL}/projects/${projectId}/pause`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/projects/${projectId}/pause`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -215,7 +223,7 @@ export async function pauseProject(projectId: string): Promise<void> {
 }
 
 export async function resumeProject(projectId: string): Promise<void> {
-  const response = await fetch(`${CONTROL_PLANE_URL}/projects/${projectId}/resume`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/projects/${projectId}/resume`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -230,7 +238,7 @@ export async function resumeProject(projectId: string): Promise<void> {
 
 export async function setNightly(projectId: string, enabled: boolean): Promise<void> {
   const response = await fetch(
-    `${CONTROL_PLANE_URL}/projects/${projectId}/nightly/${enabled ? "on" : "off"}`,
+    `${getControlPlaneBaseUrl()}/projects/${projectId}/nightly/${enabled ? "on" : "off"}`,
     {
       method: "POST",
       headers: {
@@ -251,7 +259,7 @@ export async function ingestVoice(input: {
   file: File | null
 }): Promise<VoiceIngestResponse> {
   const audioBase64 = input.file ? await fileToBase64(input.file) : null
-  const response = await fetch(`${CONTROL_PLANE_URL}/voice/ingest`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/voice/ingest`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -272,7 +280,7 @@ export async function ingestVoice(input: {
 
 export async function registerPushSubscription(subscription: PushSubscription): Promise<void> {
   const json = subscription.toJSON()
-  const response = await fetch(`${CONTROL_PLANE_URL}/notifications/subscriptions`, {
+  const response = await fetch(`${getControlPlaneBaseUrl()}/notifications/subscriptions`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -286,7 +294,7 @@ export async function registerPushSubscription(subscription: PushSubscription): 
 }
 
 export function getProjectFeedUrl(projectId: string): string {
-  return `${CONTROL_PLANE_URL}/projects/${projectId}/feed`
+  return `${getControlPlaneBaseUrl()}/projects/${projectId}/feed`
 }
 
 async function fileToBase64(file: File): Promise<string> {
