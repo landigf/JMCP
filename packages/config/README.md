@@ -1,3 +1,3 @@
-# config
+# @jmcp/config
 
-Reserved for shared configuration parsing and environment schemas. Product code does not exist yet.
+Environment parsing and runtime defaults for JMCP services and apps.

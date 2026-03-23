@@ -1,3 +1,3 @@
-# operator-web
+# @jmcp/operator-web
 
-Reserved for the future responsive web operator interface. Product code does not exist yet.
+Next.js PWA for the mobile-first JMCP operator experience.

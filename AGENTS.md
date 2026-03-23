@@ -6,7 +6,7 @@ This file is a map, not an encyclopedia. If you need deeper context, follow the 
 
 ## What this repository is
 
-JMCP is an agent-first scaffold for a remote software operations copilot. The current repository contains governance, security policy, repository structure, and mechanical quality checks. It does not contain the product implementation yet.
+JMCP is a mobile-first control plane for steering coding agents across GitHub projects. This repository contains a runnable first product slice as well as the governance, security policy, repository structure, and mechanical quality checks around it.
 
 ## Before making changes
 
@@ -32,6 +32,9 @@ JMCP is an agent-first scaffold for a remote software operations copilot. The cu
 - Test: `npm run test`
 - Full repository checks: `npm run check`
 - Docs validation only: `npm run docs:check`
+- Control plane dev server: `npm run dev:control-plane`
+- Local bridge: `npm run dev:bridge`
+- Web app: `npm run dev:web`
 
 ## Where to look next
 

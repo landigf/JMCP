@@ -1,3 +1,3 @@
-# contracts
+# @jmcp/contracts
 
-Reserved for shared schemas, API contracts, and message types. Product code does not exist yet.
+Shared domain types, API schemas, and bridge event contracts for JMCP.

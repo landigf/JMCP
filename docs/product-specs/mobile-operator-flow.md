@@ -8,7 +8,7 @@ JMCP exists to let a single trusted operator steer coding agents from a phone, n
 
 ## Phase 1
 
-The phone connects to a laptop-hosted `local-bridge` over a private overlay network. The laptop remains online and performs the actual work. The phone experience is a responsive web app rather than a native mobile app.
+The phone connects to a control plane while a laptop-hosted `local-bridge` performs the actual work. The laptop remains online and the phone experience is a responsive web app rather than a native mobile app.
 
 ## Phase 2
 
@@ -16,4 +16,11 @@ The same operator flow moves to a cloud-hosted control plane on Azure or GCP. Th
 
 ## V1 scope boundary
 
-The current repository bootstrap does not implement this flow. It only defines the constraints the eventual implementation must respect.
+The current repository implements a first usable slice of this flow:
+
+- per-project chat with task intent classification
+- TODO capture and overnight queue markers
+- run tracking, approvals, notifications, and recap cards
+- an outbound local bridge that can claim queued work and report progress
+
+This version does not yet implement live duplex voice, real coding-agent execution, or inbound Slack, Discord, Gmail, or Telegram connectors.

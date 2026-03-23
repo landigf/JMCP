@@ -1,0 +1,19 @@
+{
+  "name": "@jmcp/local-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "lint": "biome check src test package.json tsconfig.json",
+    "test": "vitest run",
+    "check": "tsc --project tsconfig.json --noEmit",
+    "format": "biome format --write src test package.json tsconfig.json"
+  },
+  "dependencies": {
+    "@jmcp/config": "0.1.0",
+    "@jmcp/contracts": "0.1.0",
+    "nanoid": "^5.1.6"
+  }
+}

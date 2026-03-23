@@ -1,3 +1,3 @@
-# security
+# @jmcp/security
 
-Reserved for shared auth, validation, and audit helpers. Product code does not exist yet.
+Shared security helpers for webhook verification, bridge authentication, and log redaction.

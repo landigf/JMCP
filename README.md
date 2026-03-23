@@ -2,36 +2,46 @@
 
 Jarvis is My Co-Pilot.
 
-JMCP is a security-first, agent-first scaffold for building a remote software operations copilot. The first version of this repository is intentionally infrastructure and documentation heavy: it establishes the rules, repository shape, and quality gates that future coding agents must follow before product code is added.
+JMCP is a private, mobile-first control plane for steering coding work across multiple GitHub repositories while the actual execution stays on your laptop. The current implementation is built around:
 
-## Current scope
+- a Next.js PWA for phone-sized steering
+- a Fastify control plane with durable SQLite state
+- a laptop-hosted bridge that can invoke Claude Code, manage git worktrees, run validations, publish PRs, and arm auto-merge behind protected-branch gates
+- Telegram long-polling for fast commands and notifications
+- local voice-note ingestion with optional local transcription commands
 
-This bootstrap does not ship a usable product yet. It provides:
+## What Works Now
 
-- a public open-source repository with governance and security policies
-- a short `AGENTS.md` file for coding agents
-- a structured `docs/` knowledge base that acts as the system of record
-- a TypeScript-based guardrail package for repository checks
-- GitHub workflows for CI, secret scanning, dependency review, CodeQL, and scheduled documentation hygiene
+- Per-project chat, TODO capture, immediate one-tap TODO execution, and overnight queueing
+- Durable project, run, recap, approval, notification, and artifact state in SQLite
+- A real bridge runtime that can:
+  - cache repos locally
+  - create per-run worktrees
+  - call `claude` in non-interactive mode
+  - validate changes
+  - retry failed validations
+  - push a branch
+  - open a PR with `gh`
+  - arm auto-merge when the repo actually has protected-green rules
+- Telegram long polling for `/projects`, `/status`, `/run`, `/todo`, `/pause`, `/resume`, `/nightly`, and `/inbox`
+- PWA voice lane for audio upload or transcript-first voice notes
 
-## Planned deployment phases
+## Security Model
 
-### Phase 1: Laptop-hosted bridge
+- The phone is a control surface, not a secret store.
+- Repo credentials stay on the laptop.
+- Telegram is optional and must use a **rotated** bot token if any previous token was exposed.
+- No public inbound port is required for v1 if you use Tailscale for the PWA and Telegram polling for bot ingress.
+- Auto-merge is only attempted when JMCP detects a protected default branch with required checks.
 
-The operator uses a phone to connect over a private overlay such as Tailscale to a laptop-hosted `local-bridge`. Secrets stay in the local OS keychain. The laptop remains the execution host.
+## Runtime Layout
 
-### Phase 2: Cloud-hosted control plane
+- `apps/operator-web`: phone-first PWA
+- `services/control-plane`: SQLite-backed control plane, notifications, Telegram polling, voice ingest
+- `services/local-bridge`: Claude/GitHub execution host
+- `packages/contracts`, `packages/config`, `packages/security`: shared runtime boundaries
 
-The operator uses the same phone interface, but the control plane and workers move to Azure or GCP. Authentication uses OIDC and MFA or passkeys. Secrets move to cloud KMS and secret manager services.
-
-## Repository layout
-
-- `AGENTS.md`: the primary entry point for coding agents
-- `ARCHITECTURE.md`: the canonical map of approved top-level boundaries
-- `docs/`: versioned product, security, compliance, reliability, and planning knowledge
-- `tooling/repo-guardrails/`: repository checks that validate structure, docs, and hygiene
-
-## Local development
+## Local Development
 
 The repository is pinned to Node 24 LTS for CI and contributors.
 
@@ -43,14 +53,38 @@ npm run check
 npm run docs:check
 ```
 
-## Required GitHub settings
+### Start JMCP
 
-Repository settings that should remain enabled:
+1. Populate env from `.env.example`
+2. Start the control plane:
 
-- branch protection on `main`
-- secret scanning and push protection
-- dependency graph and dependency alerts
-- CodeQL default setup or the checked-in CodeQL workflow
-- least-privilege GitHub Actions permissions
+```bash
+npm run dev:control-plane
+```
 
-The detailed checklist lives in [docs/operations/repo-settings.md](docs/operations/repo-settings.md).
+3. Start the bridge:
+
+```bash
+npm run dev:bridge
+```
+
+4. Start the web app:
+
+```bash
+npm run dev:web
+```
+
+5. Open `http://localhost:3000`
+
+## Required Host Setup
+
+- `claude` must be installed locally and authenticated with your Claude Max account.
+- `gh` must be installed and authenticated for the repos JMCP should touch.
+- For private phone access, expose the control plane over Tailscale instead of a public tunnel.
+- If you want voice transcription, set `JMCP_VOICE_TRANSCRIBE_COMMAND` so it prints a transcript to stdout using the file path from `JMCP_VOICE_INPUT_PATH`.
+
+## Practical Caveats
+
+- Overnight execution only works if the laptop stays powered, awake, online, and authenticated.
+- The bridge currently uses your local `gh` authentication as the practical v1 path. GitHub App credentials remain the preferred hardening path and can be layered in next.
+- Telegram voice notes are stored immediately, but fully automatic voice execution still depends on a configured local transcription command.

@@ -1,0 +1,22 @@
+{
+  "name": "@jmcp/operator-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "biome check app components lib public package.json tsconfig.json next.config.mjs next-env.d.ts",
+    "test": "vitest run --passWithNoTests",
+    "check": "tsc --project tsconfig.json --noEmit",
+    "format": "biome format --write app components lib public package.json tsconfig.json next.config.mjs next-env.d.ts"
+  },
+  "dependencies": {
+    "@jmcp/config": "0.1.0",
+    "@jmcp/contracts": "0.1.0",
+    "next": "^15.5.5",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  }
+}

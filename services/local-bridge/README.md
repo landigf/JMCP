@@ -1,3 +1,3 @@
-# local-bridge
+# @jmcp/local-bridge
 
-Reserved for the future laptop-hosted bridge used during phase 1. Product code does not exist yet.
+Outbound-only bridge that claims tasks from the control plane and executes them through local adapters.

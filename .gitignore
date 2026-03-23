@@ -3,6 +3,11 @@ node_modules/
 coverage/
 dist/
 tmp/
+.next/
+.vercel/
+.env.local
+data/
+*.tsbuildinfo
 .DS_Store
 .env
 .env.*

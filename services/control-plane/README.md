@@ -1,3 +1,3 @@
-# control-plane
+# @jmcp/control-plane
 
-Reserved for the future cloud orchestration service. Product code does not exist yet.
+Fastify control-plane service for projects, chats, TODOs, task runs, bridge sessions, webhooks, and notifications.
