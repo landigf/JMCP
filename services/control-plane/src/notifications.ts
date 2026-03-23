@@ -112,7 +112,7 @@ function buildTelegramKeyboard(
 
   if (
     notification.type === "project_update" &&
-    notification.title === "JMCP proposed follow-up work" &&
+    notification.title === "Jarvis proposed follow-up work" &&
     href
   ) {
     const parsed = href.match(/\/projects\/([^#]+)#todo-(.+)$/)
@@ -139,7 +139,7 @@ function buildTelegramKeyboard(
   if (href && config.JMCP_PUBLIC_WEB_URL) {
     rows.push([
       {
-        text: "Open JMCP",
+        text: "Open Jarvis",
         url: `${config.JMCP_PUBLIC_WEB_URL.replace(/\/$/, "")}${href}`,
       },
     ])

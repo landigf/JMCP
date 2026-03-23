@@ -281,7 +281,7 @@ export class TelegramPollingBot {
       [
         [
           {
-            text: "Open JMCP",
+            text: "Open Jarvis",
             url: this.#buildProjectUrl(project.id),
           },
         ],
@@ -458,7 +458,7 @@ export class TelegramPollingBot {
     if (!command || !["/run", "/todo"].includes(command) || !projectRef) {
       await this.#sendMessage(
         chatId,
-        "Voice notes need a caption like `/run owner/repo` or `/todo owner/repo` so JMCP knows where to route them.",
+        "Voice notes need a caption like `/run owner/repo` or `/todo owner/repo` so Jarvis knows where to route them.",
       )
       return
     }

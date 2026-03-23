@@ -3,9 +3,9 @@ import type { ReactNode } from "react"
 import "./globals.css"
 
 export const metadata: Metadata = {
-  title: "JMCP",
+  title: "Jarvis",
   description: "Jarvis is My Co-Pilot",
-  applicationName: "JMCP",
+  applicationName: "Jarvis",
 }
 
 export const viewport: Viewport = {

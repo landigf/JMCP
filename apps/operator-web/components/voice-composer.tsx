@@ -47,7 +47,7 @@ export function VoiceComposer(props: { projectId: string }) {
       <div className="stack-tight">
         <h2>Voice lane</h2>
         <p className="muted">
-          Record from iPhone or drop in a transcript. JMCP will store the audio and route the note
+          Record from iPhone or drop in a transcript. Jarvis will store the audio and route the note
           into the project queue when transcription is available.
         </p>
       </div>

@@ -37,7 +37,7 @@ export async function SharePanel(props: { projectId?: string; projectName?: stri
           <span>Pending URL</span>
         </div>
         <p className="muted">
-          Set <code>NEXT_PUBLIC_JMCP_PUBLIC_WEB_URL</code> to your private Tailscale JMCP URL to
+          Set <code>NEXT_PUBLIC_JMCP_PUBLIC_WEB_URL</code> to your private Tailscale Jarvis URL to
           unlock direct links and QR codes for your phone.
         </p>
       </div>
@@ -69,7 +69,7 @@ export async function SharePanel(props: { projectId?: string; projectName?: stri
           <p className="muted">
             These links work as-is, but they are not yet on a private Tailscale hostname. Finish
             Tailscale login and point <code>NEXT_PUBLIC_JMCP_PUBLIC_WEB_URL</code> at the tailnet
-            address when you want a stable private iPhone path outside the local network.
+            address when you want a stable private Jarvis path outside the local network.
           </p>
         </div>
       )}

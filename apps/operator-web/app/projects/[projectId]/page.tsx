@@ -77,7 +77,7 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
             <div className="panel stack-tight">
               <strong>Execution lane is occupied</strong>
               <p className="muted">
-                JMCP keeps one live workstream per project. New chat requests are deduped if they
+                Jarvis keeps one live workstream per project. New chat requests are deduped if they
                 match existing work, otherwise they are queued behind the current run.
               </p>
             </div>
@@ -97,7 +97,7 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
           <SharePanel projectId={project.project.id} projectName={project.project.name} />
           <div className="panel stack-tight">
             <div className="lane-header">
-              <h2>Proposed by JMCP</h2>
+              <h2>Proposed by Jarvis</h2>
               <span>{pendingProposals.length}</span>
             </div>
             {pendingProposals.length === 0 ? (
@@ -130,7 +130,7 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
             </div>
             {blockedTodos.length === 0 ? (
               <p className="muted">
-                If two overnight tasks pull the project in different directions, JMCP will pause
+                If two overnight tasks pull the project in different directions, Jarvis will pause
                 them here.
               </p>
             ) : (

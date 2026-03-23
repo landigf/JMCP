@@ -190,7 +190,7 @@ export default async function HomePage() {
 
           <div className="panel stack-tight">
             <div className="lane-header">
-              <h2>Proposed by JMCP</h2>
+              <h2>Proposed by Jarvis</h2>
               <span>{proposed.length}</span>
             </div>
             {proposed.length === 0 ? (

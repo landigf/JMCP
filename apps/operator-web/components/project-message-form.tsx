@@ -38,7 +38,7 @@ export function ProjectMessageForm(props: { projectId: string }) {
       <div className="stack-tight">
         <h2>Project chat</h2>
         <p className="muted">
-          Ask a question, queue a TODO, or tell JMCP to run something now. Mention “TODO” or
+          Ask a question, queue a TODO, or tell Jarvis to run something now. Mention “TODO” or
           “overnight” when you want the intent classified that way.
         </p>
       </div>

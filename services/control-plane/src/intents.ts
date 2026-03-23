@@ -89,7 +89,7 @@ export function createMobileReply(args: {
         next: [
           args.executorAvailable
             ? "Watch the activity feed for progress and approval requests."
-            : "Once an executor connects, JMCP will assign the run automatically.",
+            : "Once an executor connects, Jarvis will assign the run automatically.",
         ],
         links,
       }
@@ -106,7 +106,7 @@ export function createMobileReply(args: {
         status: "Saved for the overnight queue.",
         whatChanged: [`Marked ${args.title} for night mode.`],
         needsDecision: [],
-        next: ["JMCP will dispatch it automatically during the nightly window."],
+        next: ["Jarvis will dispatch it automatically during the nightly window."],
         links,
       }
     default:
@@ -145,7 +145,7 @@ export function createAlreadyTrackedReply(args: {
 
   return {
     status: "Already tracked in this project.",
-    whatChanged: [`JMCP kept the existing work item for ${args.title}.`],
+    whatChanged: [`Jarvis kept the existing work item for ${args.title}.`],
     needsDecision: args.blocked
       ? ["Resolve or retry the blocked work instead of creating a duplicate task."]
       : [],

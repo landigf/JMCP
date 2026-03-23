@@ -272,7 +272,7 @@ function compareNightlyTodos(older: TodoItem, newer: TodoItem): NightlyTodoRelat
   ) {
     return {
       kind: "conflict",
-      reason: `Potential conflict with "${newer.title}". JMCP was not confident enough to resolve it automatically.`,
+      reason: `Potential conflict with "${newer.title}". Jarvis was not confident enough to resolve it automatically.`,
     }
   }
 
@@ -784,7 +784,7 @@ export class ControlPlaneService {
       id: nanoid(),
       projectId,
       type: "project_update",
-      title: "JMCP proposed follow-up work",
+      title: "Jarvis proposed follow-up work",
       body: created.title,
       channel: "in_app",
       href: `/projects/${projectId}#todo-${created.id}`,
@@ -1465,7 +1465,7 @@ export class ControlPlaneService {
               older.systemNote = relation.reason
               older.updatedAt = timestamp
               newer.status = "blocked"
-              newer.systemNote = `Potential conflict with "${older.title}". JMCP paused both overnight tasks for manual confirmation.`
+              newer.systemNote = `Potential conflict with "${older.title}". Jarvis paused both overnight tasks for manual confirmation.`
               newer.updatedAt = timestamp
               blockedIds.add(older.id)
               blockedIds.add(newer.id)
@@ -1477,7 +1477,7 @@ export class ControlPlaneService {
                   projectId,
                   type: "project_update",
                   title: "Nightly queue conflict needs confirmation",
-                  body: `${older.title} conflicts with ${newer.title}. JMCP paused both tasks instead of guessing.`,
+                  body: `${older.title} conflicts with ${newer.title}. Jarvis paused both tasks instead of guessing.`,
                   channel: "in_app",
                   href: `/projects/${projectId}#todo-${newer.id}`,
                   createdAt: timestamp,
@@ -1497,7 +1497,7 @@ export class ControlPlaneService {
         nextTodo.status = "ready"
         nextTodo.systemNote =
           queuedNightlyTodos.length > 1
-            ? `Nightly queue prepared. JMCP will run this first, then continue sequentially.`
+            ? `Nightly queue prepared. Jarvis will run this first, then continue sequentially.`
             : nextTodo.systemNote
         nextTodo.updatedAt = timestamp
         this.#queueTaskRun(snapshot, {
