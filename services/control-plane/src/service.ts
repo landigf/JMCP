@@ -102,6 +102,18 @@ type EpicTaskBlueprint = {
   kind: "do_now" | "overnight" | "needs_decision" | "idea_from_jarvis"
 }
 
+type CreateGitHubRepoInput = {
+  name: string
+  description?: string | null
+  visibility: "public" | "private"
+}
+
+type QueueAllTodosResult = {
+  queuedRuns: TaskRun[]
+  touchedProjects: Project[]
+  skippedPausedProjects: Project[]
+}
+
 function nowIso(): string {
   return new Date().toISOString()
 }
@@ -116,6 +128,14 @@ function truncateText(value: string, maxLength: number): string {
 
 function dedupeStrings(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))]
+}
+
+function slugify(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
 }
 
 function shouldCreateEpic(text: string): boolean {
@@ -727,6 +747,11 @@ export class ControlPlaneService {
     return [...snapshot.notifications].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   }
 
+  async getTelegramThread(chatId: string): Promise<TelegramThreadState | null> {
+    const snapshot = await this.#store.getSnapshot()
+    return snapshot.telegramThreads.find((thread) => thread.chatId === chatId) ?? null
+  }
+
   async registerTelegramThread(input: {
     chatId: string
     lastUpdateId?: number | null
@@ -754,6 +779,132 @@ export class ControlPlaneService {
       snapshot.telegramThreads.unshift(created)
       return created
     })
+  }
+
+  async linkTelegramThreadToProject(
+    chatId: string,
+    linkedProjectId: string | null,
+  ): Promise<TelegramThreadState> {
+    return this.#store.mutate((snapshot) => {
+      const timestamp = nowIso()
+      const existing = snapshot.telegramThreads.find((thread) => thread.chatId === chatId)
+
+      if (existing) {
+        existing.linkedProjectId = linkedProjectId
+        existing.updatedAt = timestamp
+        return existing
+      }
+
+      const created = telegramThreadStateSchema.parse({
+        id: nanoid(),
+        chatId,
+        linkedProjectId,
+        lastUpdateId: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      })
+      snapshot.telegramThreads.unshift(created)
+      return created
+    })
+  }
+
+  async createGitHubRepo(input: CreateGitHubRepoInput): Promise<Project> {
+    const owner = await this.#getGitHubLogin()
+    const repoName = slugify(input.name)
+    const existingProject = (await this.getDashboardSnapshot()).projects.find(
+      (project) =>
+        project.githubOwner.toLowerCase() === owner.toLowerCase() &&
+        project.githubRepo.toLowerCase() === repoName.toLowerCase(),
+    )
+
+    if (existingProject) {
+      return existingProject
+    }
+
+    const repoExists = await this.#readGitHubJson<{ name: string } | null>(
+      `repos/${owner}/${repoName}`,
+      { allowFailure: true },
+    )
+
+    if (!repoExists) {
+      const descriptionArg = input.description?.trim()
+        ? ` --description '${input.description.trim().replaceAll("'", "'\\''")}'`
+        : ""
+      await this.#execGh(
+        `gh repo create '${owner}/${repoName}' --${input.visibility} --add-readme${descriptionArg}`,
+      )
+    }
+
+    return this.createProjectFromGithub({
+      name: input.name.trim() || repoName,
+      githubOwner: owner,
+      githubRepo: repoName,
+      summary: input.description?.trim() || undefined,
+      nightlyEnabled: true,
+    })
+  }
+
+  async queueAllTodos(projectId?: string | null): Promise<QueueAllTodosResult> {
+    const touchedProjects = new Map<string, Project>()
+    const skippedPausedProjects = new Map<string, Project>()
+
+    const queuedRuns = await this.#store.mutate((snapshot) => {
+      const candidateTodos = [...snapshot.todos]
+        .filter((todo) => (projectId ? todo.projectId === projectId : true))
+        .filter((todo) => ["queued", "ready"].includes(todo.status))
+        .filter((todo) => todo.approvalStatus !== "pending" && todo.approvalStatus !== "rejected")
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+
+      const createdRuns: TaskRun[] = []
+
+      for (const todo of candidateTodos) {
+        const project = snapshot.projects.find((entry) => entry.id === todo.projectId)
+        const policy = this.#getAutomationPolicy(snapshot, todo.projectId)
+
+        if (!project || !policy) {
+          continue
+        }
+
+        if (policy.paused) {
+          skippedPausedProjects.set(project.id, project)
+          continue
+        }
+
+        const existingRun =
+          snapshot.taskRuns.find(
+            (entry) =>
+              entry.projectId === todo.projectId &&
+              isOpenTaskRunStatus(entry.status) &&
+              (entry.sourceTodoId === todo.id ||
+                normalizeWorkLabel(entry.objective) === normalizeWorkLabel(todo.title)),
+          ) ?? null
+
+        if (existingRun) {
+          continue
+        }
+
+        todo.status = "ready"
+        todo.updatedAt = nowIso()
+        this.#feeds.publish(createFeedEvent("todo.updated", todo.projectId, todo))
+
+        const run = this.#queueTaskRun(snapshot, {
+          projectId: todo.projectId,
+          sourceTodoId: todo.id,
+          objective: todo.title,
+          priority: 10 + createdRuns.length,
+        })
+        touchedProjects.set(project.id, project)
+        createdRuns.push(run)
+      }
+
+      return createdRuns
+    })
+
+    return {
+      queuedRuns,
+      touchedProjects: [...touchedProjects.values()],
+      skippedPausedProjects: [...skippedPausedProjects.values()],
+    }
   }
 
   async createProject(input: CreateProjectInput): Promise<Project> {
@@ -2715,16 +2866,25 @@ export class ControlPlaneService {
     }
   }
 
+  async #getGitHubLogin(): Promise<string> {
+    const { stdout } = await this.#execGh("gh api user --jq .login")
+    return stdout.trim()
+  }
+
+  async #execGh(command: string): Promise<{ stdout: string; stderr: string }> {
+    return exec(command, {
+      env: {
+        ...process.env,
+        HOME: process.env.HOME ?? os.homedir(),
+      },
+      maxBuffer: 20 * 1024 * 1024,
+    })
+  }
+
   async #readGitHubJson<T>(apiPath: string, options?: { allowFailure?: boolean }): Promise<T> {
     try {
       const safePath = apiPath.replaceAll("'", "'\\''")
-      const { stdout } = await exec(`gh api '${safePath}'`, {
-        env: {
-          ...process.env,
-          HOME: process.env.HOME ?? os.homedir(),
-        },
-        maxBuffer: 20 * 1024 * 1024,
-      })
+      const { stdout } = await this.#execGh(`gh api '${safePath}'`)
       return JSON.parse(stdout) as T
     } catch (error) {
       if (options?.allowFailure) {

@@ -337,4 +337,56 @@ describe("control plane service", () => {
     expect(summary?.epicTasks.length).toBeGreaterThan(4)
     expect(summary?.todos.some((todo) => todo.title.includes("ORCID"))).toBe(true)
   })
+
+  it("queues all eligible todos for a project when requested", async () => {
+    const service = await createService()
+    const project = await service.createProject({
+      name: "Papers",
+      githubOwner: "landigf",
+      githubRepo: "Papers",
+      summary: "Paper-sharing social network",
+      defaultBranch: "main",
+      nightlyEnabled: true,
+    })
+
+    await service.createTodo(project.id, {
+      title: "Draft onboarding copy",
+      details: null,
+      nightly: false,
+      runAfter: null,
+    })
+    await service.createTodo(project.id, {
+      title: "Add recommendation explainer cards",
+      details: null,
+      nightly: false,
+      runAfter: null,
+    })
+
+    const result = await service.queueAllTodos(project.id)
+    const summary = await service.getProjectSummary(project.id)
+
+    expect(result.queuedRuns).toHaveLength(1)
+    expect(summary?.taskRuns.filter((run) => run.status === "queued")).toHaveLength(2)
+  })
+
+  it("stores and updates the focused Telegram project per chat", async () => {
+    const service = await createService()
+    const project = await service.createProject({
+      name: "Papers",
+      githubOwner: "landigf",
+      githubRepo: "Papers",
+      summary: "Paper-sharing social network",
+      defaultBranch: "main",
+      nightlyEnabled: true,
+    })
+
+    await service.registerTelegramThread({
+      chatId: "chat-1",
+    })
+    const linked = await service.linkTelegramThreadToProject("chat-1", project.id)
+    const stored = await service.getTelegramThread("chat-1")
+
+    expect(linked.linkedProjectId).toBe(project.id)
+    expect(stored?.linkedProjectId).toBe(project.id)
+  })
 })
