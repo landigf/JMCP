@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { MockExecutorAdapter } from "../src/executor.js"
+import { createBundleFilename, MockExecutorAdapter } from "../src/executor.js"
 
 describe("mock executor", () => {
+  it("sanitizes bundle filenames for branch names with slashes", () => {
+    expect(createBundleFilename("jmcp/search-and-discovery-skeleton-bJb-5yPx", "pr.md")).toBe(
+      "jmcp-search-and-discovery-skeleton-bJb-5yPx-pr.md",
+    )
+  })
+
   it("requests approval for protected actions", async () => {
     const executor = new MockExecutorAdapter()
     const events: Array<{ event: string }> = []

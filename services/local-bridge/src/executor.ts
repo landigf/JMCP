@@ -54,6 +54,15 @@ function slugify(input: string): string {
     .slice(0, 40)
 }
 
+export function createBundleFilename(input: string, suffix: string): string {
+  const stem = input
+    .replace(/[\\/]+/g, "-")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+
+  return `${stem || "artifact"}-${suffix}`
+}
+
 function createPlanPrompt(
   project: Project,
   brief: ProjectBrief,
@@ -1146,7 +1155,11 @@ export class ClaudeCodeExecutor implements ExecutorAdapter {
       )
       return typeof existing.url === "string" ? existing.url : ""
     } catch {
-      const bodyPath = path.join(this.#config.JMCP_BRIDGE_BUNDLE_ROOT, `${branchName}-pr.md`)
+      const bodyPath = path.join(
+        this.#config.JMCP_BRIDGE_BUNDLE_ROOT,
+        createBundleFilename(branchName, "pr.md"),
+      )
+      await mkdir(path.dirname(bodyPath), { recursive: true })
       await writeFile(bodyPath, reviewSummary)
       const url = await captureTextCommand(
         this.#config.JMCP_BRIDGE_GH_COMMAND,
