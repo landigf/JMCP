@@ -42,7 +42,9 @@ import {
   repoCatalogEntrySchema,
   runDetailSchema,
   type TaskRun,
+  type TelegramThreadState,
   type TodoItem,
+  telegramThreadStateSchema,
   type VoiceIngestInput,
   type VoiceIngestResponse,
   voiceAssetSchema,
@@ -723,6 +725,35 @@ export class ControlPlaneService {
   async getInbox(): Promise<Notification[]> {
     const snapshot = await this.#store.getSnapshot()
     return [...snapshot.notifications].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }
+
+  async registerTelegramThread(input: {
+    chatId: string
+    lastUpdateId?: number | null
+    linkedProjectId?: string | null
+  }): Promise<TelegramThreadState> {
+    return this.#store.mutate((snapshot) => {
+      const timestamp = nowIso()
+      const existing = snapshot.telegramThreads.find((thread) => thread.chatId === input.chatId)
+
+      if (existing) {
+        existing.lastUpdateId = input.lastUpdateId ?? existing.lastUpdateId
+        existing.linkedProjectId = input.linkedProjectId ?? existing.linkedProjectId
+        existing.updatedAt = timestamp
+        return existing
+      }
+
+      const created = telegramThreadStateSchema.parse({
+        id: nanoid(),
+        chatId: input.chatId,
+        linkedProjectId: input.linkedProjectId ?? null,
+        lastUpdateId: input.lastUpdateId ?? null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      })
+      snapshot.telegramThreads.unshift(created)
+      return created
+    })
   }
 
   async createProject(input: CreateProjectInput): Promise<Project> {

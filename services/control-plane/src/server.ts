@@ -13,6 +13,14 @@ await runtime.app.listen({
 
 void telegram.start()
 
+if (config.JMCP_TELEGRAM_BOT_TOKEN_SOURCE === "keychain") {
+  console.log("Telegram bot token loaded from macOS Keychain.")
+} else if (config.JMCP_TELEGRAM_BOT_TOKEN_SOURCE === "env") {
+  console.log("Telegram bot token loaded from environment.")
+} else {
+  console.log("Telegram bot disabled: no bot token configured.")
+}
+
 if (config.JMCP_XAI_API_KEY_SOURCE === "keychain") {
   console.log("xAI provider secret loaded from macOS Keychain.")
 } else if (config.JMCP_XAI_API_KEY_SOURCE === "env") {

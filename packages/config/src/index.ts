@@ -29,6 +29,8 @@ const controlPlaneEnvSchema = z.object({
   JMCP_WEB_PUSH_SUBJECT: z.string().default("mailto:operator@example.com"),
   JMCP_TELEGRAM_BOT_TOKEN: z.string().optional(),
   JMCP_TELEGRAM_CHAT_ID: z.string().optional(),
+  JMCP_TELEGRAM_KEYCHAIN_SERVICE: z.string().default("JMCP_TELEGRAM_BOT_TOKEN"),
+  JMCP_TELEGRAM_KEYCHAIN_ACCOUNT: z.string().optional(),
   JMCP_TELEGRAM_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2000),
   JMCP_NIGHTLY_START_HOUR: z.coerce.number().int().min(0).max(23).default(1),
   JMCP_NIGHTLY_END_HOUR: z.coerce.number().int().min(0).max(23).default(6),
@@ -80,11 +82,14 @@ export type ControlPlaneConfig = Omit<
   | "JMCP_CONTROL_PLANE_DB_PATH"
   | "JMCP_AUTORUN_ENABLED"
   | "JMCP_VOICE_ASSET_DIR"
+  | "JMCP_TELEGRAM_KEYCHAIN_ACCOUNT"
   | "JMCP_XAI_KEYCHAIN_ACCOUNT"
 > & {
   JMCP_CONTROL_PLANE_DB_PATH: string
   JMCP_AUTORUN_ENABLED: boolean
   JMCP_VOICE_ASSET_DIR: string
+  JMCP_TELEGRAM_KEYCHAIN_ACCOUNT: string
+  JMCP_TELEGRAM_BOT_TOKEN_SOURCE: "env" | "keychain" | "none"
   JMCP_XAI_KEYCHAIN_ACCOUNT: string
   JMCP_XAI_API_KEY_SOURCE: "env" | "keychain" | "none"
 }
@@ -106,6 +111,9 @@ export function getControlPlaneConfig(env: NodeJS.ProcessEnv = process.env): Con
       parsed.JMCP_CONTROL_PLANE_DB_PATH ?? path.join(dataDir, "jmcp.sqlite"),
     JMCP_AUTORUN_ENABLED: parseBoolean(parsed.JMCP_AUTORUN_ENABLED, true),
     JMCP_VOICE_ASSET_DIR: parsed.JMCP_VOICE_ASSET_DIR ?? path.join(dataDir, "voice"),
+    JMCP_TELEGRAM_KEYCHAIN_ACCOUNT:
+      parsed.JMCP_TELEGRAM_KEYCHAIN_ACCOUNT ?? env.USER ?? os.userInfo().username,
+    JMCP_TELEGRAM_BOT_TOKEN_SOURCE: parsed.JMCP_TELEGRAM_BOT_TOKEN ? "env" : "none",
     JMCP_XAI_KEYCHAIN_ACCOUNT:
       parsed.JMCP_XAI_KEYCHAIN_ACCOUNT ?? env.USER ?? os.userInfo().username,
     JMCP_XAI_API_KEY_SOURCE: parsed.JMCP_XAI_API_KEY ? "env" : "none",
@@ -145,23 +153,40 @@ export async function resolveControlPlaneConfig(
   options: ResolveControlPlaneConfigOptions = {},
 ): Promise<ControlPlaneConfig> {
   const config = getControlPlaneConfig(env)
+  const keychainLookup = options.keychainLookup ?? loadKeychainSecret
 
-  if (config.JMCP_XAI_API_KEY) {
-    return config
+  let resolvedConfig = config
+
+  if (!resolvedConfig.JMCP_TELEGRAM_BOT_TOKEN) {
+    const telegramKeychainSecret = await keychainLookup({
+      service: resolvedConfig.JMCP_TELEGRAM_KEYCHAIN_SERVICE,
+      account: resolvedConfig.JMCP_TELEGRAM_KEYCHAIN_ACCOUNT,
+    })
+
+    if (telegramKeychainSecret) {
+      resolvedConfig = {
+        ...resolvedConfig,
+        JMCP_TELEGRAM_BOT_TOKEN: telegramKeychainSecret,
+        JMCP_TELEGRAM_BOT_TOKEN_SOURCE: "keychain",
+      }
+    }
   }
 
-  const keychainLookup = options.keychainLookup ?? loadKeychainSecret
+  if (resolvedConfig.JMCP_XAI_API_KEY) {
+    return resolvedConfig
+  }
+
   const keychainSecret = await keychainLookup({
-    service: config.JMCP_XAI_KEYCHAIN_SERVICE,
-    account: config.JMCP_XAI_KEYCHAIN_ACCOUNT,
+    service: resolvedConfig.JMCP_XAI_KEYCHAIN_SERVICE,
+    account: resolvedConfig.JMCP_XAI_KEYCHAIN_ACCOUNT,
   })
 
   if (!keychainSecret) {
-    return config
+    return resolvedConfig
   }
 
   return {
-    ...config,
+    ...resolvedConfig,
     JMCP_XAI_API_KEY: keychainSecret,
     JMCP_XAI_API_KEY_SOURCE: "keychain",
   }

@@ -62,6 +62,12 @@ npm run docs:check
 security add-generic-password -a "$USER" -s JMCP_XAI_API_KEY -w 'your-rotated-key'
 ```
 
+   - For Telegram, prefer macOS Keychain too:
+
+```bash
+security add-generic-password -a "$USER" -s JMCP_TELEGRAM_BOT_TOKEN -w 'your-rotated-telegram-token'
+```
+
 2. Start the control plane:
 
 ```bash
@@ -108,3 +114,5 @@ If the share panel shows `LAN fallback active`, the QR codes still work on the s
 - The bridge currently uses your local `gh` authentication as the practical v1 path. GitHub App credentials remain the preferred hardening path and can be layered in next.
 - Telegram voice notes are stored immediately, but fully automatic voice execution still depends on a configured local transcription command.
 - If `JMCP_XAI_API_KEY` is not present in the environment, the control plane automatically looks for a macOS Keychain item with service `JMCP_XAI_API_KEY`.
+- If `JMCP_TELEGRAM_BOT_TOKEN` is not present in the environment, the control plane automatically looks for a macOS Keychain item with service `JMCP_TELEGRAM_BOT_TOKEN`.
+- Telegram notifications no longer require `JMCP_TELEGRAM_CHAT_ID` up front; once you send the bot a first message, Jarvis stores that chat and can notify it automatically.

@@ -35,8 +35,12 @@ describe("config", () => {
       },
       {
         keychainLookup: async ({ service, account }) => {
-          expect(service).toBe("JMCP_XAI_API_KEY")
           expect(account).toBe("landigf")
+          if (service === "JMCP_TELEGRAM_BOT_TOKEN") {
+            return null
+          }
+
+          expect(service).toBe("JMCP_XAI_API_KEY")
           return "keychain-key"
         },
       },

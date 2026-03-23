@@ -97,10 +97,17 @@ export class TelegramPollingBot {
 
   async #handleUpdate(update: TelegramUpdate): Promise<void> {
     if (update.callback_query?.data) {
+      const callbackChatId = String(update.callback_query.message?.chat.id ?? "")
+      if (callbackChatId) {
+        await this.#service.registerTelegramThread({
+          chatId: callbackChatId,
+          lastUpdateId: update.update_id,
+        })
+      }
       await this.#handleCallback(
         update.callback_query.id,
         update.callback_query.data,
-        String(update.callback_query.message?.chat.id ?? ""),
+        callbackChatId,
       )
       return
     }
@@ -113,6 +120,11 @@ export class TelegramPollingBot {
     if (this.#config.JMCP_TELEGRAM_CHAT_ID && this.#config.JMCP_TELEGRAM_CHAT_ID !== chatId) {
       return
     }
+
+    await this.#service.registerTelegramThread({
+      chatId,
+      lastUpdateId: update.update_id,
+    })
 
     if (update.message.voice) {
       await this.#handleVoiceMessage(

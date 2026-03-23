@@ -28,7 +28,7 @@ export class CompositeNotificationDispatcher implements NotificationDispatcher {
   async deliver(notification: Notification, snapshot: WorkspaceSnapshot): Promise<void> {
     await Promise.all([
       this.#deliverWebPush(notification, snapshot),
-      this.#deliverTelegram(notification),
+      this.#deliverTelegram(notification, snapshot),
     ])
   }
 
@@ -50,32 +50,44 @@ export class CompositeNotificationDispatcher implements NotificationDispatcher {
     )
   }
 
-  async #deliverTelegram(notification: Notification): Promise<void> {
+  async #deliverTelegram(notification: Notification, snapshot: WorkspaceSnapshot): Promise<void> {
     const token = this.#config.JMCP_TELEGRAM_BOT_TOKEN
-    const chatId = this.#config.JMCP_TELEGRAM_CHAT_ID
+    const chatIds = new Set<string>()
 
-    if (!token || !chatId) {
+    if (this.#config.JMCP_TELEGRAM_CHAT_ID) {
+      chatIds.add(this.#config.JMCP_TELEGRAM_CHAT_ID)
+    }
+
+    for (const thread of snapshot.telegramThreads) {
+      chatIds.add(thread.chatId)
+    }
+
+    if (!token || chatIds.size === 0) {
       return
     }
 
     const inline_keyboard = buildTelegramKeyboard(notification, this.#config)
 
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: `${notification.title}\n${notification.body}`,
-        disable_web_page_preview: true,
-        reply_markup: inline_keyboard
-          ? {
-              inline_keyboard,
-            }
-          : undefined,
-      }),
-    }).catch(() => undefined)
+    await Promise.allSettled(
+      [...chatIds].map((chatId) =>
+        fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: `${notification.title}\n${notification.body}`,
+            disable_web_page_preview: true,
+            reply_markup: inline_keyboard
+              ? {
+                  inline_keyboard,
+                }
+              : undefined,
+          }),
+        }),
+      ),
+    )
   }
 }
 
