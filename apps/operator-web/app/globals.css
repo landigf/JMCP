@@ -292,6 +292,11 @@ p {
   border: 1px solid rgba(121, 178, 255, 0.16);
 }
 
+.button-small {
+  padding: 10px 14px;
+  font-size: 0.92rem;
+}
+
 .button-danger {
   background: rgba(255, 127, 134, 0.12);
   color: var(--danger);
@@ -308,6 +313,61 @@ p {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.share-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.share-mode-banner {
+  border: 1px solid rgba(255, 193, 117, 0.28);
+  border-radius: 20px;
+  padding: 14px 16px;
+  background: linear-gradient(180deg, rgba(255, 193, 117, 0.14), rgba(255, 193, 117, 0.05));
+}
+
+.share-mode-banner strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #ffd7a2;
+}
+
+.share-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(121, 178, 255, 0.12);
+  background: rgba(7, 12, 19, 0.74);
+}
+
+.share-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.share-input {
+  font-size: 0.85rem;
+}
+
+.share-qr {
+  display: grid;
+  place-items: center;
+  min-height: 220px;
+  padding: 14px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top, rgba(108, 201, 255, 0.12), transparent 44%), rgba(3, 7, 13, 0.96);
+  border: 1px solid rgba(121, 178, 255, 0.1);
+}
+
+.share-qr img {
+  width: min(100%, 220px);
+  height: auto;
 }
 
 .notification-card,
@@ -375,6 +435,10 @@ p {
   }
 
   .grid-two {
+    grid-template-columns: 1fr;
+  }
+
+  .share-actions {
     grid-template-columns: 1fr;
   }
 

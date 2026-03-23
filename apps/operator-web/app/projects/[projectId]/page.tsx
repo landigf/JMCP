@@ -3,6 +3,7 @@ import { ProjectAutomationControls } from "../../../components/project-automatio
 import { ProjectFeed } from "../../../components/project-feed"
 import { ProjectMessageForm } from "../../../components/project-message-form"
 import { RunActions } from "../../../components/run-actions"
+import { SharePanel } from "../../../components/share-panel"
 import { TodoForm } from "../../../components/todo-form"
 import { TodoRunButton } from "../../../components/todo-run-button"
 import { VoiceComposer } from "../../../components/voice-composer"
@@ -64,6 +65,7 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
         </div>
 
         <div className="stack">
+          <SharePanel projectId={project.project.id} projectName={project.project.name} />
           <div className="panel stack-tight">
             <div className="lane-header">
               <h2>Do now</h2>

@@ -76,6 +76,19 @@ npm run dev:web
 
 5. Open `http://localhost:3000`
 
+### Open JMCP on iPhone
+
+For a private phone path, use Tailscale instead of a public tunnel.
+
+1. Install and join Tailscale on the laptop and the iPhone.
+2. Set `JMCP_CONTROL_PLANE_HOST=0.0.0.0`.
+3. Set `NEXT_PUBLIC_CONTROL_PLANE_URL` to your private Tailscale control-plane URL, for example `http://your-laptop.tailnet.ts.net:4000`.
+4. Set both `NEXT_PUBLIC_JMCP_PUBLIC_WEB_URL` and `JMCP_PUBLIC_WEB_URL` to the private web URL, for example `http://your-laptop.tailnet.ts.net:3000`.
+5. Restart `npm run dev:control-plane`, `npm run dev:bridge`, and `npm run dev:web`.
+6. Open JMCP and use the new `Open on iPhone` panel to scan the workspace QR or the direct project QR from your phone.
+
+If the share panel shows `LAN fallback active`, the QR codes still work on the same Wi-Fi network, but the URLs are not yet on a private tailnet hostname.
+
 ## Required Host Setup
 
 - `claude` must be installed locally and authenticated with your Claude Max account.

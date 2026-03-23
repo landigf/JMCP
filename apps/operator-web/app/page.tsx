@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { CreateProjectForm } from "../components/create-project-form"
 import { PushSetup } from "../components/push-setup"
+import { SharePanel } from "../components/share-panel"
 import { getDashboard } from "../lib/api"
 
 export default async function HomePage() {
@@ -22,6 +23,9 @@ export default async function HomePage() {
   const mergedOvernight = dashboard.recaps
     .filter((recap) => recap.title.toLowerCase().includes("merged"))
     .slice(0, 4)
+  const websiteProject = dashboard.projects.find(
+    (project) => project.githubOwner === "landigf" && project.githubRepo === "landigf.github.io",
+  )
 
   return (
     <main className="page-shell">
@@ -174,6 +178,8 @@ export default async function HomePage() {
         </div>
 
         <div className="stack">
+          <SharePanel projectId={websiteProject?.id} projectName={websiteProject?.name} />
+
           <div className="panel stack-tight">
             <div className="lane-header">
               <h2>Inbox</h2>
