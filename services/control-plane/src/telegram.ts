@@ -1,5 +1,6 @@
 import type { ControlPlaneConfig } from "@jmcp/config"
 import type { Project } from "@jmcp/contracts"
+import { XaiGrokProvider } from "./providers.js"
 import type { ControlPlaneService } from "./service.js"
 
 type TelegramUpdate = {
@@ -24,6 +25,31 @@ type TelegramUpdate = {
   }
 }
 
+type TelegramNaturalLanguageAction = {
+  action:
+    | "help"
+    | "open_project"
+    | "create_repo"
+    | "workspace_status"
+    | "project_dashboard"
+    | "next"
+    | "decisions"
+    | "proposals"
+    | "todos"
+    | "runs"
+    | "runall"
+    | "run"
+    | "todo"
+    | "epic"
+    | "website"
+  projectRef?: string | null
+  text?: string | null
+  repoName?: string | null
+  description?: string | null
+  visibility?: "public" | "private" | null
+  scope?: "focused" | "workspace" | "all" | null
+}
+
 function normalizeProjectRef(input: string): string {
   return input.trim().toLowerCase()
 }
@@ -31,6 +57,7 @@ function normalizeProjectRef(input: string): string {
 export class TelegramPollingBot {
   readonly #config: ControlPlaneConfig
   readonly #service: ControlPlaneService
+  readonly #textProvider: XaiGrokProvider
   #running = false
   #offset = 0
   #botConfigured = false
@@ -38,6 +65,7 @@ export class TelegramPollingBot {
   constructor(config: ControlPlaneConfig, service: ControlPlaneService) {
     this.#config = config
     this.#service = service
+    this.#textProvider = new XaiGrokProvider(config)
   }
 
   get enabled(): boolean {
@@ -87,6 +115,7 @@ export class TelegramPollingBot {
       ["next", "Show the next actionable work"],
       ["decisions", "Show items waiting for your decision"],
       ["proposals", "Show ideas proposed by Jarvis"],
+      ["website", "Show the visual app or site URL"],
       ["todos", "Queued TODOs, grouped by project"],
       ["runs", "Running, blocked, and approval-needed work"],
       ["run", "Queue an immediate task on a project"],
@@ -208,7 +237,8 @@ export class TelegramPollingBot {
 
       const dashboard = await this.#service.getDashboardSnapshot()
       const focusedProject = await this.#getFocusedProject(chatId, dashboard.projects)
-      if (!focusedProject) {
+      const handled = await this.#handleNaturalLanguage(chatId, text, dashboard.projects)
+      if (!handled && !focusedProject) {
         await this.#sendMessage(
           chatId,
           "No focused project for this chat yet. Use /open owner/repo first, then you can send plain task messages directly.",
@@ -216,7 +246,9 @@ export class TelegramPollingBot {
         return
       }
 
-      await this.#runProjectCommand(chatId, text)
+      if (!handled) {
+        await this.#runProjectCommand(chatId, text)
+      }
       return
     }
 
@@ -265,6 +297,9 @@ export class TelegramPollingBot {
       case "/proposals":
         await this.#sendProposals(chatId, remainder)
         return
+      case "/website":
+        await this.#sendWebsite(chatId, remainder)
+        return
       case "/todos":
         await this.#sendTodos(chatId, remainder)
         return
@@ -292,7 +327,7 @@ export class TelegramPollingBot {
       default:
         await this.#sendMessage(
           chatId,
-          "Unknown command. Use /start, /projects, /focus, /project, /repos, /open, /newrepo, /status, /next, /decisions, /proposals, /todos, /runs, /run, /runall, /todo, /epic, /pause, /resume, /nightly, or /inbox.",
+          "Unknown command. Use /start, /projects, /focus, /project, /repos, /open, /newrepo, /status, /next, /decisions, /proposals, /website, /todos, /runs, /run, /runall, /todo, /epic, /pause, /resume, /nightly, or /inbox.",
         )
     }
   }
@@ -300,6 +335,7 @@ export class TelegramPollingBot {
   async #sendWelcome(chatId: string): Promise<void> {
     const dashboard = await this.#service.getDashboardSnapshot()
     const focusedProject = await this.#getFocusedProject(chatId, dashboard.projects)
+    const focusedProjectSite = focusedProject ? this.#buildProjectSiteUrl(focusedProject) : null
     const projects = dashboard.projects.slice(0, 4)
 
     await this.#sendMessage(
@@ -347,6 +383,14 @@ export class TelegramPollingBot {
                   text: "Open dashboard",
                   url: this.#buildProjectUrl(focusedProject.id),
                 },
+                ...(focusedProjectSite
+                  ? [
+                      {
+                        text: "Open site",
+                        url: focusedProjectSite,
+                      },
+                    ]
+                  : []),
               ],
             ]
           : this.#config.JMCP_PUBLIC_WEB_URL
@@ -562,6 +606,7 @@ export class TelegramPollingBot {
       (todo) => todo.source === "assistant" && todo.approvalStatus === "pending",
     )
     const pendingDecisions = summary.epicTasks.filter((task) => task.status === "needs_decision")
+    const projectSite = this.#buildProjectSiteUrl(project)
 
     await this.#sendMessage(
       chatId,
@@ -578,8 +623,13 @@ export class TelegramPollingBot {
       [
         [
           { text: "Open dashboard", url: this.#buildProjectUrl(project.id) },
-          { text: "Run all", callback_data: `project_runall:${project.id}` },
+          ...(projectSite
+            ? [{ text: "Open site", url: projectSite }]
+            : [{ text: "Run all", callback_data: `project_runall:${project.id}` }]),
         ],
+        ...(projectSite
+          ? [[{ text: "Run all", callback_data: `project_runall:${project.id}` }]]
+          : []),
         [
           { text: "Next", callback_data: `project_next:${project.id}` },
           { text: "Decisions", callback_data: `project_decisions:${project.id}` },
@@ -696,6 +746,33 @@ export class TelegramPollingBot {
       return
     }
     await this.#sendProjectDashboard(chatId, `${project.githubOwner}/${project.githubRepo}`)
+  }
+
+  async #sendWebsite(chatId: string, remainder: string): Promise<void> {
+    const { project } = await this.#resolveProjectForCommand(chatId, remainder, {
+      allowFocusedProject: true,
+      usage: "Usage: /website owner/repo",
+    })
+    if (!project) {
+      return
+    }
+
+    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    const url = this.#buildProjectSiteUrl(project)
+    if (!url) {
+      await this.#sendMessage(
+        chatId,
+        `No product URL is configured yet for ${project.githubOwner}/${project.githubRepo}.`,
+        this.#buildProjectActionRows(project.id),
+      )
+      return
+    }
+
+    await this.#sendMessage(
+      chatId,
+      `${project.githubOwner}/${project.githubRepo}\nVisual app: ${url}`,
+      [[{ text: "Open site", url }]],
+    )
   }
 
   async #sendNext(chatId: string, remainder: string): Promise<void> {
@@ -1801,6 +1878,215 @@ export class TelegramPollingBot {
     const base = this.#config.JMCP_PUBLIC_WEB_URL?.replace(/\/$/, "")
     return base ? `${base}/projects/${projectId}` : `/projects/${projectId}`
   }
+
+  #buildProjectSiteUrl(project: Project): string | null {
+    const base = this.#config.JMCP_PUBLIC_WEB_URL?.replace(/\/$/, "")
+    const repoRef = `${project.githubOwner}/${project.githubRepo}`.toLowerCase()
+
+    if (repoRef === "landigf/papers") {
+      return base ? `${base}/papers` : null
+    }
+
+    if (repoRef === "landigf/landigf.github.io") {
+      return "https://landigf.github.io"
+    }
+
+    if (repoRef === "landigf/broletter") {
+      return "https://landigf.github.io/Broletter/"
+    }
+
+    if (repoRef === "landigf/jmcp") {
+      return base ?? null
+    }
+
+    return null
+  }
+
+  async #handleNaturalLanguage(
+    chatId: string,
+    text: string,
+    projects: Project[],
+  ): Promise<boolean> {
+    const lower = text.toLowerCase()
+    const focusedProject = await this.#getFocusedProject(chatId, projects)
+    const explicitProject =
+      projects.find((project) => {
+        const ownerRepo = `${project.githubOwner}/${project.githubRepo}`.toLowerCase()
+        return lower.includes(ownerRepo) || lower.includes(project.githubRepo.toLowerCase())
+      }) ?? null
+    const candidateProject = explicitProject ?? focusedProject
+
+    if (/\b(status|state|progress|how is it going|current state)\b/.test(lower)) {
+      if (candidateProject) {
+        await this.#sendProjectDashboard(chatId, candidateProject.id)
+      } else {
+        await this.#sendStatus(chatId, "")
+      }
+      return true
+    }
+
+    if (/\b(website|site|url|link|address|preview)\b/.test(lower) && candidateProject) {
+      await this.#sendWebsite(chatId, candidateProject.id)
+      return true
+    }
+
+    if (/\b(next|what should|what next|next action)\b/.test(lower)) {
+      await this.#sendNext(chatId, candidateProject?.id ?? "")
+      return true
+    }
+
+    if (/\b(decision|confirm|approval|blocked)\b/.test(lower)) {
+      await this.#sendDecisions(chatId, candidateProject?.id ?? "")
+      return true
+    }
+
+    if (/\b(proposal|idea from jarvis|suggestion|future ideas)\b/.test(lower)) {
+      await this.#sendProposals(chatId, candidateProject?.id ?? "")
+      return true
+    }
+
+    if (/\b(todos|todo list|queued tasks|queue)\b/.test(lower)) {
+      await this.#sendTodos(chatId, candidateProject?.id ?? "")
+      return true
+    }
+
+    if (/\b(runs|running|in progress)\b/.test(lower)) {
+      await this.#sendRuns(chatId, candidateProject?.id ?? "")
+      return true
+    }
+
+    if (/\b(run all|start all|execute all|do them all)\b/.test(lower)) {
+      await this.#runAllTodos(chatId, candidateProject?.id ?? "all")
+      return true
+    }
+
+    if (!this.#textProvider.enabled) {
+      return false
+    }
+
+    const action = await this.#classifyNaturalLanguage(text, projects, focusedProject)
+    if (!action) {
+      return false
+    }
+
+    switch (action.action) {
+      case "help":
+        await this.#sendWelcome(chatId)
+        return true
+      case "open_project":
+        if (action.projectRef) {
+          await this.#openProject(chatId, action.projectRef)
+          return true
+        }
+        return false
+      case "create_repo":
+        if (action.repoName) {
+          const prefix = action.visibility === "public" ? "--public " : "--private "
+          const description = action.description?.trim() ? ` | ${action.description.trim()}` : ""
+          await this.#createRepo(chatId, `${prefix}${action.repoName}${description}`)
+          return true
+        }
+        return false
+      case "workspace_status":
+        await this.#sendStatus(chatId, "")
+        return true
+      case "project_dashboard":
+        await this.#sendProjectDashboard(chatId, action.projectRef ?? "")
+        return true
+      case "next":
+        await this.#sendNext(chatId, action.projectRef ?? "")
+        return true
+      case "decisions":
+        await this.#sendDecisions(chatId, action.projectRef ?? "")
+        return true
+      case "proposals":
+        await this.#sendProposals(chatId, action.projectRef ?? "")
+        return true
+      case "todos":
+        await this.#sendTodos(chatId, action.projectRef ?? "")
+        return true
+      case "runs":
+        await this.#sendRuns(chatId, action.projectRef ?? "")
+        return true
+      case "runall":
+        await this.#runAllTodos(chatId, action.scope === "all" ? "all" : (action.projectRef ?? ""))
+        return true
+      case "todo":
+        if (action.text) {
+          await this.#queueTodo(
+            chatId,
+            this.#composeProjectScopedInput(action.projectRef, action.text),
+          )
+          return true
+        }
+        return false
+      case "run":
+        if (action.text) {
+          await this.#runProjectCommand(
+            chatId,
+            this.#composeProjectScopedInput(action.projectRef, action.text),
+          )
+          return true
+        }
+        return false
+      case "epic":
+        if (action.text) {
+          await this.#createEpic(
+            chatId,
+            this.#composeProjectScopedInput(action.projectRef, action.text),
+          )
+          return true
+        }
+        return false
+      case "website":
+        await this.#sendWebsite(chatId, action.projectRef ?? "")
+        return true
+      default:
+        return false
+    }
+  }
+
+  async #classifyNaturalLanguage(
+    text: string,
+    projects: Project[],
+    focusedProject: Project | null,
+  ): Promise<TelegramNaturalLanguageAction | null> {
+    try {
+      const output = await this.#textProvider.complete({
+        system:
+          "You translate a Telegram operator message into one structured Jarvis action. Return only a single JSON object with keys action, projectRef, text, repoName, description, visibility, and scope. Do not add markdown.",
+        prompt: [
+          "Allowed actions: help, open_project, create_repo, workspace_status, project_dashboard, next, decisions, proposals, todos, runs, runall, run, todo, epic, website.",
+          "Rules:",
+          '- If the user asks for current state, progress, or status of a project, choose "project_dashboard".',
+          '- If the user asks for the current workspace state across projects, choose "workspace_status".',
+          '- If the user asks for the website, preview, URL, address, or link to click, choose "website".',
+          '- If the user wants to remember, save, note, queue, or store work, choose "todo".',
+          '- If the user wants work executed now, choose "run".',
+          '- If the user describes a large product direction or many features, choose "epic".',
+          '- If the user wants everything queued to start, choose "runall".',
+          '- If the user asks for ideas Jarvis suggested, choose "proposals".',
+          "- Use projectRef when a project is explicit. Use the focused project if the message is clearly about it.",
+          '- If asking about all projects, set scope to "all" or "workspace" as appropriate.',
+          `Focused project: ${focusedProject ? `${focusedProject.githubOwner}/${focusedProject.githubRepo}` : "none"}.`,
+          `Known projects: ${projects
+            .slice(0, 20)
+            .map((project) => `${project.githubOwner}/${project.githubRepo}`)
+            .join(", ")}.`,
+          `Message: ${text}`,
+        ].join("\n"),
+      })
+
+      const parsed = parseNaturalLanguageAction(output)
+      return parsed
+    } catch {
+      return null
+    }
+  }
+
+  #composeProjectScopedInput(projectRef: string | null | undefined, text: string): string {
+    return projectRef ? `${projectRef} ${text}`.trim() : text.trim()
+  }
 }
 
 function resolveProject(reference: string, projects: Project[]): Project | null {
@@ -1877,6 +2163,22 @@ function parseNewRepoCommand(
     name,
     description: tail.join("|").trim() || null,
     visibility,
+  }
+}
+
+function parseNaturalLanguageAction(input: string): TelegramNaturalLanguageAction | null {
+  const trimmed = input.trim()
+  const fenced = trimmed.replace(/^```(?:json)?\s*|\s*```$/g, "")
+  const jsonStart = fenced.indexOf("{")
+  const jsonEnd = fenced.lastIndexOf("}")
+  if (jsonStart === -1 || jsonEnd === -1 || jsonEnd < jsonStart) {
+    return null
+  }
+
+  try {
+    return JSON.parse(fenced.slice(jsonStart, jsonEnd + 1)) as TelegramNaturalLanguageAction
+  } catch {
+    return null
   }
 }
 
