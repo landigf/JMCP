@@ -15,6 +15,8 @@ import type {
 
 const execFile = promisify(execFileCallback)
 const PROMPT_PACK_VERSION = "2026-03-23a"
+const PLANNER_TIMEOUT_MS = 30_000
+const MODEL_PASS_TIMEOUT_MS = 10 * 60 * 1000
 
 type AssignedTask = Extract<BridgeClaimResponse, { event: "task.assign" }>
 
@@ -188,7 +190,13 @@ async function captureJsonCommand(
   command: string,
   args: string[],
   cwd: string,
+  timeoutMs?: number,
 ): Promise<Record<string, unknown>> {
+  if (timeoutMs) {
+    const stdout = await captureTextCommand(command, args, cwd, timeoutMs)
+    return JSON.parse(stdout)
+  }
+
   const result = await execFile(command, args, {
     cwd,
     env: {
@@ -200,16 +208,83 @@ async function captureJsonCommand(
   return JSON.parse(result.stdout)
 }
 
-async function captureTextCommand(command: string, args: string[], cwd: string): Promise<string> {
-  const result = await execFile(command, args, {
-    cwd,
-    env: {
-      ...process.env,
-      HOME: process.env.HOME ?? os.homedir(),
-    },
-    maxBuffer: 10 * 1024 * 1024,
+async function captureTextCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+  timeoutMs?: number,
+): Promise<string> {
+  if (!timeoutMs) {
+    const result = await execFile(command, args, {
+      cwd,
+      env: {
+        ...process.env,
+        HOME: process.env.HOME ?? os.homedir(),
+      },
+      maxBuffer: 10 * 1024 * 1024,
+    })
+    return result.stdout.trim()
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: {
+        ...process.env,
+        HOME: process.env.HOME ?? os.homedir(),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+
+    let stdout = ""
+    let stderr = ""
+    let finished = false
+
+    const forceKillTimer = setTimeout(() => {
+      if (!finished) {
+        child.kill("SIGKILL")
+      }
+    }, timeoutMs + 1_500)
+
+    const timeoutTimer = setTimeout(() => {
+      if (!finished) {
+        child.kill("SIGTERM")
+      }
+    }, timeoutMs)
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString()
+    })
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString()
+    })
+
+    child.on("error", (error) => {
+      finished = true
+      clearTimeout(timeoutTimer)
+      clearTimeout(forceKillTimer)
+      reject(error)
+    })
+
+    child.on("close", (code, signal) => {
+      finished = true
+      clearTimeout(timeoutTimer)
+      clearTimeout(forceKillTimer)
+
+      if (signal || code === 143 || code === 137) {
+        reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s`))
+        return
+      }
+
+      if (code && code !== 0) {
+        reject(new Error(`Command failed with exit code ${code}: ${stderr.trim()}`))
+        return
+      }
+
+      resolve(stdout.trim())
+    })
   })
-  return result.stdout.trim()
 }
 
 async function runShell(
@@ -256,6 +331,7 @@ async function runClaudeJson(args: {
   cwd: string
   prompt: string
   permissionMode: "plan" | "bypassPermissions"
+  timeoutMs?: number
 }): Promise<{
   result: string
   totalCostUsd: number | null
@@ -272,12 +348,28 @@ async function runClaudeJson(args: {
       "--dangerously-skip-permissions",
     ],
     args.cwd,
+    args.timeoutMs,
   )
 
   return {
     result: typeof response.result === "string" ? response.result : JSON.stringify(response.result),
     totalCostUsd: typeof response.total_cost_usd === "number" ? response.total_cost_usd : null,
   }
+}
+
+function createFallbackPlannerSummary(
+  task: AssignedTask,
+  brief: ProjectBrief,
+  projectMemory: ProjectMemory,
+): string {
+  return [
+    `Fallback plan for ${task.taskRun.objective}`,
+    `1. Inspect the app routes, feed logic, and shared contracts that most directly control ${task.taskRun.objective}.`,
+    "2. Implement the smallest coherent slice that preserves existing repo boundaries and public/blind-mode safety rules.",
+    `3. Validate with: ${brief.testCommands.join(" | ")}`,
+    "4. Keep the change repo-local, then summarize risks and next steps clearly.",
+    `Project facts: ${projectMemory.repoFacts.slice(0, 3).join(" | ")}`,
+  ].join("\n")
 }
 
 function parseProposalList(raw: string): Array<{ title: string; details: string | null }> {
@@ -624,44 +716,77 @@ export class ClaudeCodeExecutor implements ExecutorAdapter {
       },
     })
 
-    const planner = await runClaudeJson({
-      command: this.#config.JMCP_BRIDGE_CLAUDE_COMMAND,
-      cwd: worktreeDir,
-      prompt: createPlanPrompt(
-        task.project,
-        task.brief,
-        task.projectMemory,
-        task.taskRun.objective,
-      ),
-      permissionMode: "plan",
-    })
+    try {
+      const planner = await runClaudeJson({
+        command: this.#config.JMCP_BRIDGE_CLAUDE_COMMAND,
+        cwd: worktreeDir,
+        prompt: createPlanPrompt(
+          task.project,
+          task.brief,
+          task.projectMemory,
+          task.taskRun.objective,
+        ),
+        permissionMode: "plan",
+        timeoutMs: PLANNER_TIMEOUT_MS,
+      })
 
-    await emit({
-      event: "task.progress",
-      message: "Plan ready. Moving into code changes.",
-      step: {
-        kind: "plan",
-        status: "completed",
-        title: "Planner pass complete",
-        body: planner.result,
-      },
-      attempt: {
-        phase: "planner",
-        number: 1,
-        status: "completed",
-        promptPackVersion: PROMPT_PACK_VERSION,
-        summary: planner.result.slice(0, 500),
-        totalCostUsd: planner.totalCostUsd,
-      },
-      artifact: {
-        kind: "plan",
-        title: "Planner summary",
-        text: planner.result,
-        url: null,
-      },
-    })
+      await emit({
+        event: "task.progress",
+        message: "Plan ready. Moving into code changes.",
+        step: {
+          kind: "plan",
+          status: "completed",
+          title: "Planner pass complete",
+          body: planner.result,
+        },
+        attempt: {
+          phase: "planner",
+          number: 1,
+          status: "completed",
+          promptPackVersion: PROMPT_PACK_VERSION,
+          summary: planner.result.slice(0, 500),
+          totalCostUsd: planner.totalCostUsd,
+        },
+        artifact: {
+          kind: "plan",
+          title: "Planner summary",
+          text: planner.result,
+          url: null,
+        },
+      })
 
-    return planner.result
+      return planner.result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const fallbackPlan = createFallbackPlannerSummary(task, task.brief, task.projectMemory)
+
+      await emit({
+        event: "task.progress",
+        message: "Planner timed out. Jarvis switched to a bounded fallback plan.",
+        step: {
+          kind: "plan",
+          status: "completed",
+          title: "Planner fallback",
+          body: `${message}\n\n${fallbackPlan}`,
+        },
+        attempt: {
+          phase: "planner",
+          number: 1,
+          status: "completed",
+          promptPackVersion: PROMPT_PACK_VERSION,
+          summary: fallbackPlan.slice(0, 500),
+          totalCostUsd: null,
+        },
+        artifact: {
+          kind: "plan",
+          title: "Fallback planner summary",
+          text: `${message}\n\n${fallbackPlan}`,
+          url: null,
+        },
+      })
+
+      return fallbackPlan
+    }
   }
 
   async #runExecutorPass(
@@ -701,6 +826,7 @@ export class ClaudeCodeExecutor implements ExecutorAdapter {
         planSummary,
       ),
       permissionMode: "bypassPermissions",
+      timeoutMs: MODEL_PASS_TIMEOUT_MS,
     })
 
     await emit({
@@ -735,6 +861,7 @@ export class ClaudeCodeExecutor implements ExecutorAdapter {
       cwd: worktreeDir,
       prompt: createRepairPrompt(task.taskRun.objective, validationOutput, attemptNumber),
       permissionMode: "bypassPermissions",
+      timeoutMs: MODEL_PASS_TIMEOUT_MS,
     })
 
     await emit({
@@ -805,6 +932,7 @@ export class ClaudeCodeExecutor implements ExecutorAdapter {
       cwd: worktreeDir,
       prompt: createReviewPrompt(task.taskRun.objective),
       permissionMode: "plan",
+      timeoutMs: MODEL_PASS_TIMEOUT_MS,
     })
 
     await emit({
@@ -846,6 +974,7 @@ export class ClaudeCodeExecutor implements ExecutorAdapter {
       cwd: worktreeDir,
       prompt: createRecapPrompt(task.taskRun.objective, reviewSummary),
       permissionMode: "plan",
+      timeoutMs: MODEL_PASS_TIMEOUT_MS,
     })
 
     await emit({
@@ -882,6 +1011,7 @@ export class ClaudeCodeExecutor implements ExecutorAdapter {
       cwd: worktreeDir,
       prompt: createProposalPrompt(task.taskRun.objective, reviewSummary, recapSummary),
       permissionMode: "plan",
+      timeoutMs: MODEL_PASS_TIMEOUT_MS,
     })
 
     const proposals = parseProposalList(result.result)
