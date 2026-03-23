@@ -1,5 +1,5 @@
-import { exec as execCallback } from "node:child_process"
-import { mkdir, writeFile } from "node:fs/promises"
+import { exec as execCallback, execFile as execFileCallback } from "node:child_process"
+import { mkdir, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
@@ -22,6 +22,16 @@ import {
   epicTaskSchema,
   type FeedEvent,
   type GitHubWebhookEnvelope,
+  getActiveRuns,
+  getAttentionRuns,
+  getBlockedTodos,
+  getNeedsDecisionTasks,
+  getPendingProposalTodos,
+  getRunnableTodos,
+  type KernelSession,
+  type KernelTurn,
+  kernelSessionSchema,
+  kernelTurnSchema,
   type MobileReply,
   type Notification,
   notificationSchema,
@@ -40,6 +50,7 @@ import {
   type RunArtifact,
   type RunDetail,
   repoCatalogEntrySchema,
+  resolveProjectSurfaceUrls,
   runDetailSchema,
   type TaskRun,
   type TelegramThreadState,
@@ -66,6 +77,7 @@ import type {
 } from "./types.js"
 
 const exec = promisify(execCallback)
+const execFile = promisify(execFileCallback)
 
 const JARVIS_TEMPLATE_NAME = "jarvis-managed-default"
 const JARVIS_TEMPLATE_VERSION = "2026-03-23b"
@@ -112,6 +124,20 @@ type QueueAllTodosResult = {
   queuedRuns: TaskRun[]
   touchedProjects: Project[]
   skippedPausedProjects: Project[]
+  runnableTodoCount: number
+  alreadyTrackedCount: number
+  blockedTodoCount: number
+  proposalCount: number
+  decisionCount: number
+}
+
+type KernelTurnResult = {
+  mode: "inspect" | "mutate"
+  response: string
+  project: Project | null
+  queuedRun: TaskRun | null
+  preemptedRun: TaskRun | null
+  resumedRun: TaskRun | null
 }
 
 function nowIso(): string {
@@ -156,6 +182,30 @@ function shouldCreateEpic(text: string): boolean {
     "architecture",
     "workstream",
   ].some((needle) => lower.includes(needle))
+}
+
+function isKernelUrgentRequest(text: string): boolean {
+  return /\b(urgent|asap|right now|immediately|hotfix|emergency|drop everything|priority)\b/i.test(
+    text,
+  )
+}
+
+function isLikelyMutationKernelPrompt(text: string): boolean {
+  if (
+    /\b(status|state|progress|summarize|summary|what is happening|what changed|show me|describe|why|explain|which task|what is blocked|what is running)\b/i.test(
+      text,
+    )
+  ) {
+    return false
+  }
+
+  return /\b(add|build|change|create|edit|fix|implement|improve|patch|refactor|remove|ship|update|work on|debug|investigate|make)\b/i.test(
+    text,
+  )
+}
+
+function truncateKernelObjective(value: string): string {
+  return truncateText(value.replace(/\s+/g, " ").trim(), 140)
 }
 
 function createEpicTitle(project: Project, description: string): string {
@@ -774,6 +824,25 @@ export class ControlPlaneService {
     return snapshot.telegramThreads.find((thread) => thread.chatId === chatId) ?? null
   }
 
+  async listTelegramThreads(): Promise<TelegramThreadState[]> {
+    const snapshot = await this.#store.getSnapshot()
+    return [...snapshot.telegramThreads]
+  }
+
+  async getKernelSession(chatId: string): Promise<KernelSession | null> {
+    const snapshot = await this.#store.getSnapshot()
+    const thread = snapshot.telegramThreads.find((entry) => entry.chatId === chatId)
+    if (!thread?.kernelSessionId) {
+      return null
+    }
+
+    return (
+      snapshot.kernelSessions.find(
+        (entry) => entry.id === thread.kernelSessionId && entry.status === "active",
+      ) ?? null
+    )
+  }
+
   async registerTelegramThread(input: {
     chatId: string
     lastUpdateId?: number | null
@@ -786,6 +855,14 @@ export class ControlPlaneService {
       if (existing) {
         existing.lastUpdateId = input.lastUpdateId ?? existing.lastUpdateId
         existing.linkedProjectId = input.linkedProjectId ?? existing.linkedProjectId
+        if (
+          input.linkedProjectId !== undefined &&
+          (!existing.kernelMode ||
+            !existing.kernelTargetProjectId ||
+            existing.kernelTargetProjectId === existing.linkedProjectId)
+        ) {
+          existing.kernelTargetProjectId = input.linkedProjectId
+        }
         existing.updatedAt = timestamp
         return existing
       }
@@ -794,6 +871,9 @@ export class ControlPlaneService {
         id: nanoid(),
         chatId: input.chatId,
         linkedProjectId: input.linkedProjectId ?? null,
+        kernelMode: false,
+        kernelSessionId: null,
+        kernelTargetProjectId: input.linkedProjectId ?? null,
         lastUpdateId: input.lastUpdateId ?? null,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -813,6 +893,13 @@ export class ControlPlaneService {
 
       if (existing) {
         existing.linkedProjectId = linkedProjectId
+        if (
+          !existing.kernelMode ||
+          !existing.kernelTargetProjectId ||
+          existing.kernelTargetProjectId === existing.linkedProjectId
+        ) {
+          existing.kernelTargetProjectId = linkedProjectId
+        }
         existing.updatedAt = timestamp
         return existing
       }
@@ -821,12 +908,120 @@ export class ControlPlaneService {
         id: nanoid(),
         chatId,
         linkedProjectId,
+        kernelMode: false,
+        kernelSessionId: null,
+        kernelTargetProjectId: linkedProjectId,
         lastUpdateId: null,
         createdAt: timestamp,
         updatedAt: timestamp,
       })
       snapshot.telegramThreads.unshift(created)
       return created
+    })
+  }
+
+  async startKernelSession(
+    chatId: string,
+    targetProjectId: string | null = null,
+  ): Promise<KernelSession> {
+    return this.#store.mutate((snapshot) => {
+      const timestamp = nowIso()
+      const thread =
+        snapshot.telegramThreads.find((entry) => entry.chatId === chatId) ??
+        telegramThreadStateSchema.parse({
+          id: nanoid(),
+          chatId,
+          linkedProjectId: targetProjectId,
+          kernelMode: false,
+          kernelSessionId: null,
+          kernelTargetProjectId: targetProjectId,
+          lastUpdateId: null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        })
+
+      if (!snapshot.telegramThreads.some((entry) => entry.id === thread.id)) {
+        snapshot.telegramThreads.unshift(thread)
+      }
+
+      let session =
+        (thread.kernelSessionId
+          ? snapshot.kernelSessions.find((entry) => entry.id === thread.kernelSessionId)
+          : null) ?? null
+
+      if (!session || session.status !== "active") {
+        session = kernelSessionSchema.parse({
+          id: nanoid(),
+          chatId,
+          targetProjectId: targetProjectId ?? thread.linkedProjectId ?? null,
+          status: "active",
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          lastTurnAt: null,
+        })
+        snapshot.kernelSessions.unshift(session)
+      } else {
+        session.targetProjectId =
+          targetProjectId ?? session.targetProjectId ?? thread.linkedProjectId
+        session.status = "active"
+        session.updatedAt = timestamp
+      }
+
+      thread.kernelMode = true
+      thread.kernelSessionId = session.id
+      thread.kernelTargetProjectId = session.targetProjectId ?? null
+      thread.updatedAt = timestamp
+      return session
+    })
+  }
+
+  async stopKernelSession(chatId: string): Promise<KernelSession | null> {
+    return this.#store.mutate((snapshot) => {
+      const thread = snapshot.telegramThreads.find((entry) => entry.chatId === chatId)
+      if (!thread?.kernelSessionId) {
+        return null
+      }
+
+      const session = snapshot.kernelSessions.find((entry) => entry.id === thread.kernelSessionId)
+      if (!session) {
+        thread.kernelMode = false
+        thread.kernelSessionId = null
+        thread.updatedAt = nowIso()
+        return null
+      }
+
+      const timestamp = nowIso()
+      session.status = "closed"
+      session.updatedAt = timestamp
+      session.lastTurnAt = session.lastTurnAt ?? timestamp
+      thread.kernelMode = false
+      thread.kernelSessionId = null
+      thread.updatedAt = timestamp
+      return session
+    })
+  }
+
+  async setKernelTarget(
+    chatId: string,
+    targetProjectId: string | null,
+  ): Promise<KernelSession | null> {
+    return this.#store.mutate((snapshot) => {
+      const thread = snapshot.telegramThreads.find((entry) => entry.chatId === chatId)
+      if (!thread?.kernelSessionId) {
+        return null
+      }
+
+      const session = snapshot.kernelSessions.find((entry) => entry.id === thread.kernelSessionId)
+      if (!session) {
+        return null
+      }
+
+      const timestamp = nowIso()
+      session.targetProjectId = targetProjectId
+      session.updatedAt = timestamp
+      thread.kernelTargetProjectId = targetProjectId
+      thread.updatedAt = timestamp
+      return session
     })
   }
 
@@ -867,14 +1062,28 @@ export class ControlPlaneService {
   }
 
   async queueAllTodos(projectId?: string | null): Promise<QueueAllTodosResult> {
+    const snapshot = await this.#store.getSnapshot()
+    const pausedProjectIds = new Set(
+      snapshot.automationPolicies.filter((entry) => entry.paused).map((entry) => entry.projectId),
+    )
+    const queuedReadyTodos = snapshot.todos.filter(
+      (todo) =>
+        (projectId ? todo.projectId === projectId : true) &&
+        todo.approvalStatus === "approved" &&
+        ["queued", "ready"].includes(todo.status),
+    )
+    const runnableTodos = getRunnableTodos(snapshot.todos, snapshot.taskRuns, projectId).filter(
+      (todo) => !pausedProjectIds.has(todo.projectId),
+    )
     const touchedProjects = new Map<string, Project>()
     const skippedPausedProjects = new Map<string, Project>()
 
     const queuedRuns = await this.#store.mutate((snapshot) => {
-      const candidateTodos = [...snapshot.todos]
-        .filter((todo) => (projectId ? todo.projectId === projectId : true))
-        .filter((todo) => ["queued", "ready"].includes(todo.status))
-        .filter((todo) => todo.approvalStatus !== "pending" && todo.approvalStatus !== "rejected")
+      const candidateTodos = getRunnableTodos(snapshot.todos, snapshot.taskRuns, projectId)
+        .filter((todo) => {
+          const policy = this.#getAutomationPolicy(snapshot, todo.projectId)
+          return !policy?.paused
+        })
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
 
       const createdRuns: TaskRun[] = []
@@ -926,7 +1135,47 @@ export class ControlPlaneService {
       queuedRuns,
       touchedProjects: [...touchedProjects.values()],
       skippedPausedProjects: [...skippedPausedProjects.values()],
+      runnableTodoCount: runnableTodos.length,
+      alreadyTrackedCount: queuedReadyTodos.length - runnableTodos.length,
+      blockedTodoCount: getBlockedTodos(snapshot.todos, projectId).length,
+      proposalCount: getPendingProposalTodos(snapshot.todos, projectId).length,
+      decisionCount: getNeedsDecisionTasks(snapshot.epicTasks, projectId).length,
     }
+  }
+
+  async runKernelTurn(chatId: string, prompt: string): Promise<KernelTurnResult> {
+    const snapshot = await this.#store.getSnapshot()
+    const thread = snapshot.telegramThreads.find((entry) => entry.chatId === chatId) ?? null
+    const focusedProject =
+      snapshot.projects.find(
+        (entry) => entry.id === (thread?.kernelTargetProjectId ?? thread?.linkedProjectId ?? null),
+      ) ?? null
+
+    const session = await this.startKernelSession(chatId, focusedProject?.id ?? null)
+    const action = isLikelyMutationKernelPrompt(prompt) ? "mutate" : "inspect"
+
+    if (action === "inspect") {
+      const response = await this.#runKernelInspection(session, focusedProject, prompt)
+      await this.#recordKernelTurn(session, focusedProject?.id ?? null, "inspect", prompt, response)
+      return {
+        mode: "inspect",
+        response,
+        project: focusedProject,
+        queuedRun: null,
+        preemptedRun: null,
+        resumedRun: null,
+      }
+    }
+
+    const result = await this.#queueKernelMutation(session, focusedProject, prompt)
+    await this.#recordKernelTurn(
+      session,
+      focusedProject?.id ?? null,
+      "mutate",
+      prompt,
+      result.response,
+    )
+    return result
   }
 
   async createProject(input: CreateProjectInput): Promise<Project> {
@@ -2639,6 +2888,346 @@ export class ControlPlaneService {
     }
   }
 
+  async #recordKernelTurn(
+    session: KernelSession,
+    projectId: string | null,
+    action: KernelTurn["action"],
+    prompt: string,
+    response: string,
+    status: KernelTurn["status"] = "completed",
+  ): Promise<KernelTurn> {
+    return this.#store.mutate((snapshot) => {
+      const timestamp = nowIso()
+      const turn = kernelTurnSchema.parse({
+        id: nanoid(),
+        kernelSessionId: session.id,
+        projectId,
+        action,
+        prompt,
+        response,
+        status,
+        createdAt: timestamp,
+      })
+
+      snapshot.kernelTurns.unshift(turn)
+      const storedSession = snapshot.kernelSessions.find((entry) => entry.id === session.id)
+      if (storedSession) {
+        storedSession.lastTurnAt = timestamp
+        storedSession.updatedAt = timestamp
+      }
+
+      return turn
+    })
+  }
+
+  async #runKernelInspection(
+    session: KernelSession,
+    targetProject: Project | null,
+    prompt: string,
+  ): Promise<string> {
+    const dashboard = await this.getDashboardSnapshot()
+    const activeRuns = getActiveRuns(dashboard.taskRuns, targetProject?.id ?? null)
+    const attentionRuns = getAttentionRuns(dashboard.taskRuns, targetProject?.id ?? null)
+    const runnableTodos = getRunnableTodos(
+      dashboard.todos,
+      dashboard.taskRuns,
+      targetProject?.id ?? null,
+    )
+    const proposals = getPendingProposalTodos(dashboard.todos, targetProject?.id ?? null)
+    const decisions = getNeedsDecisionTasks(dashboard.epicTasks, targetProject?.id ?? null)
+    const surface = targetProject
+      ? resolveProjectSurfaceUrls(targetProject, this.#config.JMCP_PUBLIC_WEB_URL)
+      : null
+    const cwd = await this.#resolveKernelWorkingDirectory(targetProject)
+
+    const context = [
+      "You are Jarvis kernel, the mobile operator console backed by the real Claude CLI on the laptop.",
+      "You are in inspection mode. Answer compactly and concretely. Do not edit files in this turn.",
+      `Session: ${session.id}`,
+      `Focused project: ${targetProject ? `${targetProject.githubOwner}/${targetProject.githubRepo}` : "workspace"}`,
+      targetProject ? `Dashboard URL: ${surface?.dashboardUrl ?? "none"}` : null,
+      targetProject ? `Product URL: ${surface?.productUrl ?? "none"}` : null,
+      `Active runs: ${activeRuns.map((run) => run.objective).join(" | ") || "none"}`,
+      `Attention runs: ${attentionRuns.map((run) => `${run.status}:${run.objective}`).join(" | ") || "none"}`,
+      `Runnable TODOs: ${runnableTodos.map((todo) => todo.title).join(" | ") || "none"}`,
+      `Decisions: ${decisions.map((task) => task.title).join(" | ") || "none"}`,
+      `Jarvis proposals: ${proposals.map((todo) => todo.title).join(" | ") || "none"}`,
+      `Operator request: ${prompt}`,
+    ]
+      .filter(Boolean)
+      .join("\n")
+
+    try {
+      return await this.#runClaudeKernelPrompt(cwd, context)
+    } catch {
+      return [
+        targetProject
+          ? `Kernel status for ${targetProject.githubOwner}/${targetProject.githubRepo}`
+          : "Kernel workspace status",
+        `Active runs: ${activeRuns.length}`,
+        `Attention runs: ${attentionRuns.length}`,
+        `Runnable TODOs: ${runnableTodos.length}`,
+        `Decisions: ${decisions.length}`,
+        `Proposals: ${proposals.length}`,
+      ].join("\n")
+    }
+  }
+
+  async #queueKernelMutation(
+    _session: KernelSession,
+    targetProject: Project | null,
+    prompt: string,
+  ): Promise<KernelTurnResult> {
+    if (!targetProject) {
+      return {
+        mode: "mutate",
+        response:
+          "Kernel needs a focused project before it can mutate code. Focus a project first or use /kernel target owner/repo.",
+        project: null,
+        queuedRun: null,
+        preemptedRun: null,
+        resumedRun: null,
+      }
+    }
+
+    const urgent = isKernelUrgentRequest(prompt)
+    let queuedRun: TaskRun | null = null
+    let preemptedRun: TaskRun | null = null
+    let resumedRun: TaskRun | null = null
+    let kernelCanStartImmediately = true
+
+    await this.#store.mutate((snapshot) => {
+      const activeRun =
+        snapshot.taskRuns.find(
+          (entry) =>
+            entry.projectId === targetProject.id &&
+            entry.id !== queuedRun?.id &&
+            ["queued", "planning", "running", "validating", "merging", "needs_approval"].includes(
+              entry.status,
+            ),
+        ) ?? null
+
+      if (activeRun && !urgent) {
+        kernelCanStartImmediately = false
+      }
+
+      if (activeRun && urgent && !["running", "validating", "merging"].includes(activeRun.status)) {
+        const timestamp = nowIso()
+        activeRun.status = "preempted"
+        activeRun.updatedAt = timestamp
+        activeRun.resultSummary = `Preempted by urgent kernel request: ${truncateKernelObjective(prompt)}`
+        this.#feeds.publish(createFeedEvent("task.run.updated", activeRun.projectId, activeRun))
+        preemptedRun = { ...activeRun }
+
+        if (activeRun.sourceTodoId) {
+          const linkedTodo = snapshot.todos.find((entry) => entry.id === activeRun.sourceTodoId)
+          if (linkedTodo && !["done", "cancelled"].includes(linkedTodo.status)) {
+            linkedTodo.status = "ready"
+            linkedTodo.updatedAt = timestamp
+            linkedTodo.systemNote =
+              "Re-opened after an urgent Telegram kernel request preempted the previous run."
+            this.#feeds.publish(createFeedEvent("todo.updated", linkedTodo.projectId, linkedTodo))
+          }
+        } else {
+          resumedRun = this.#queueTaskRun(snapshot, {
+            projectId: activeRun.projectId,
+            sourceTodoId: null,
+            objective: activeRun.objective,
+            priority: activeRun.priority + 1,
+            source: activeRun.source,
+          })
+          activeRun.resumedAsTaskRunId = resumedRun.id
+          resumedRun.preemptedByTaskRunId = activeRun.id
+        }
+      }
+
+      queuedRun = this.#queueTaskRun(snapshot, {
+        projectId: targetProject.id,
+        sourceTodoId: null,
+        objective: truncateKernelObjective(prompt),
+        priority: urgent ? 0 : kernelCanStartImmediately ? 2 : 8,
+        source: "kernel",
+      })
+      queuedRun.resultSummary = urgent
+        ? "Queued by urgent Telegram kernel override."
+        : "Queued by Telegram kernel."
+      this.#feeds.publish(createFeedEvent("task.run.updated", queuedRun.projectId, queuedRun))
+    })
+
+    const resolvedPreemptedRun = preemptedRun as TaskRun | null
+    const resolvedResumedRun = resumedRun as TaskRun | null
+    const resolvedQueuedRun = queuedRun as TaskRun | null
+    const preemptedObjective = resolvedPreemptedRun?.objective ?? null
+    const resumedObjective = resolvedResumedRun?.objective ?? null
+    const queuedObjective = resolvedQueuedRun?.objective ?? truncateKernelObjective(prompt)
+
+    const response = urgent
+      ? preemptedObjective
+        ? [
+            `Kernel override started for ${targetProject.githubOwner}/${targetProject.githubRepo}.`,
+            `Preempted: ${preemptedObjective}`,
+            resumedObjective ? `Queued to resume later: ${resumedObjective}` : null,
+            queuedObjective ? `Urgent kernel run: ${queuedObjective}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : [
+            `Kernel override queued for ${targetProject.githubOwner}/${targetProject.githubRepo}.`,
+            "A live executor-owned run could not be hard-stopped mid-step safely, so Jarvis started the urgent kernel work at the front of the project queue instead.",
+            queuedObjective ? `Kernel run: ${queuedObjective}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n")
+      : kernelCanStartImmediately
+        ? `Kernel queued immediate work on ${targetProject.githubOwner}/${targetProject.githubRepo}: ${queuedObjective}`
+        : [
+            `Kernel captured work for ${targetProject.githubOwner}/${targetProject.githubRepo}.`,
+            "Another run is already active on this project, so Jarvis queued the kernel work behind it.",
+            queuedObjective ? `Queued kernel run: ${queuedObjective}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n")
+
+    return {
+      mode: "mutate",
+      response,
+      project: targetProject,
+      queuedRun,
+      preemptedRun,
+      resumedRun,
+    }
+  }
+
+  async #runClaudeKernelPrompt(cwd: string, prompt: string): Promise<string> {
+    const { stdout } = await execFile(
+      "claude",
+      [
+        "-p",
+        prompt,
+        "--output-format",
+        "json",
+        "--permission-mode",
+        "plan",
+        "--dangerously-skip-permissions",
+      ],
+      {
+        cwd,
+        env: {
+          ...process.env,
+          HOME: process.env.HOME ?? os.homedir(),
+        },
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: 120_000,
+      },
+    )
+
+    const parsed = JSON.parse(stdout) as {
+      result?: unknown
+    }
+
+    return typeof parsed.result === "string" ? parsed.result : JSON.stringify(parsed.result)
+  }
+
+  async #resolveKernelWorkingDirectory(targetProject: Project | null): Promise<string> {
+    if (!targetProject) {
+      return process.cwd()
+    }
+
+    const local = await this.#findLocalRepoPath(targetProject)
+    return local ?? process.cwd()
+  }
+
+  async #findLocalRepoPath(targetProject: Project): Promise<string | null> {
+    const currentRepoRef = `${targetProject.githubOwner}/${targetProject.githubRepo}`.toLowerCase()
+    if (currentRepoRef === "landigf/jmcp") {
+      return process.cwd()
+    }
+
+    const workspaceRoot = path.resolve(process.cwd(), "..")
+    const directCandidates = [
+      path.join(workspaceRoot, targetProject.githubRepo),
+      path.join(workspaceRoot, targetProject.name),
+      path.join(workspaceRoot, "Website", targetProject.githubRepo),
+      path.join(workspaceRoot, "Newsletter"),
+    ]
+
+    for (const candidate of directCandidates) {
+      try {
+        await stat(path.join(candidate, ".git"))
+        const remote = await exec(
+          `git -C '${candidate.replaceAll("'", "'\\''")}' config --get remote.origin.url`,
+          {
+            env: {
+              ...process.env,
+              HOME: process.env.HOME ?? os.homedir(),
+            },
+            maxBuffer: 1024 * 1024,
+            shell: "/bin/zsh",
+          },
+        )
+        if (
+          remote.stdout
+            .toLowerCase()
+            .includes(
+              `${targetProject.githubOwner.toLowerCase()}/${targetProject.githubRepo.toLowerCase()}`,
+            )
+        ) {
+          return candidate
+        }
+      } catch {}
+    }
+
+    try {
+      const { stdout } = await exec(
+        `find '${workspaceRoot.replaceAll("'", "'\\''")}' -maxdepth 3 -name .git -type d`,
+        {
+          env: {
+            ...process.env,
+            HOME: process.env.HOME ?? os.homedir(),
+          },
+          maxBuffer: 5 * 1024 * 1024,
+          shell: "/bin/zsh",
+        },
+      )
+
+      const candidates = stdout
+        .split("\n")
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+        .map((entry) => path.dirname(entry))
+
+      for (const candidate of candidates) {
+        try {
+          const remote = await exec(
+            `git -C '${candidate.replaceAll("'", "'\\''")}' config --get remote.origin.url`,
+            {
+              env: {
+                ...process.env,
+                HOME: process.env.HOME ?? os.homedir(),
+              },
+              maxBuffer: 1024 * 1024,
+              shell: "/bin/zsh",
+            },
+          )
+
+          if (
+            remote.stdout
+              .toLowerCase()
+              .includes(
+                `${targetProject.githubOwner.toLowerCase()}/${targetProject.githubRepo.toLowerCase()}`,
+              )
+          ) {
+            return candidate
+          }
+        } catch {}
+      }
+    } catch {
+      return null
+    }
+
+    return null
+  }
+
   #queueTaskRun(
     snapshot: Awaited<ReturnType<WorkspaceStore["getSnapshot"]>>,
     args: {
@@ -2646,6 +3235,7 @@ export class ControlPlaneService {
       sourceTodoId: string | null
       objective: string
       priority: number
+      source?: TaskRun["source"]
     },
   ): TaskRun {
     const timestamp = nowIso()
@@ -2654,6 +3244,7 @@ export class ControlPlaneService {
       projectId: args.projectId,
       sourceTodoId: args.sourceTodoId,
       objective: args.objective,
+      source: args.source ?? "normal",
       status: "queued",
       branchName: null,
       executorId: null,
@@ -2665,6 +3256,8 @@ export class ControlPlaneService {
       attemptCount: 0,
       lastErrorSignature: null,
       mergeState: null,
+      preemptedByTaskRunId: null,
+      resumedAsTaskRunId: null,
       createdAt: timestamp,
       updatedAt: timestamp,
     }
@@ -2827,7 +3420,9 @@ export class ControlPlaneService {
         resolved.status =
           run.status === "completed"
             ? "done"
-            : run.status === "blocked" || run.status === "needs_approval"
+            : run.status === "blocked" ||
+                run.status === "needs_approval" ||
+                run.status === "preempted"
               ? "blocked"
               : run.status === "cancelled"
                 ? "cancelled"
@@ -3148,7 +3743,7 @@ export class ControlPlaneService {
           ? "task_completed"
           : run.status === "needs_approval"
             ? "approval_requested"
-            : run.status === "blocked" || run.status === "failed"
+            : run.status === "blocked" || run.status === "failed" || run.status === "preempted"
               ? "task_blocked"
               : "task_update",
       title: run.objective,

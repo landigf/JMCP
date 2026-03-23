@@ -1,3 +1,11 @@
+import {
+  getActiveRuns,
+  getAttentionRuns,
+  getBlockedTodos,
+  getNeedsDecisionTasks,
+  getPendingProposalTodos,
+  getRunnableTodos,
+} from "@jmcp/contracts"
 import Link from "next/link"
 import { CreateProjectForm } from "../components/create-project-form"
 import { PushSetup } from "../components/push-setup"
@@ -11,26 +19,14 @@ export default async function HomePage() {
       .filter((policy) => policy.paused)
       .map((policy) => policy.projectId),
   )
-  const doNow = dashboard.todos
-    .filter(
-      (todo) => todo.approvalStatus === "approved" && ["queued", "ready"].includes(todo.status),
-    )
+  const doNow = getRunnableTodos(dashboard.todos, dashboard.taskRuns)
+    .filter((todo) => !pausedProjects.has(todo.projectId))
     .slice(0, 6)
-  const running = dashboard.taskRuns
-    .filter((run) => ["planning", "running", "validating", "merging"].includes(run.status))
-    .slice(0, 6)
-  const blocked = dashboard.taskRuns
-    .filter((run) => ["blocked", "needs_approval"].includes(run.status))
-    .slice(0, 6)
-  const blockedTodos = dashboard.todos
-    .filter((todo) => todo.approvalStatus === "approved" && todo.status === "blocked")
-    .slice(0, 6)
-  const proposed = dashboard.todos
-    .filter((todo) => todo.source === "assistant" && todo.approvalStatus === "pending")
-    .slice(0, 6)
-  const epics = dashboard.epics
-    .filter((epic) => ["planned", "active", "blocked"].includes(epic.status))
-    .slice(0, 6)
+  const running = getActiveRuns(dashboard.taskRuns).slice(0, 6)
+  const blocked = getAttentionRuns(dashboard.taskRuns).slice(0, 6)
+  const blockedTodos = getBlockedTodos(dashboard.todos).slice(0, 6)
+  const proposed = getPendingProposalTodos(dashboard.todos).slice(0, 6)
+  const decisionTasks = getNeedsDecisionTasks(dashboard.epicTasks).slice(0, 6)
   const mergedOvernight = dashboard.recaps
     .filter((recap) => recap.title.toLowerCase().includes("merged"))
     .slice(0, 4)
@@ -59,7 +55,9 @@ export default async function HomePage() {
             <span>Runs moving</span>
           </div>
           <div className="metric-card">
-            <strong>{blocked.length + proposed.length + blockedTodos.length + epics.length}</strong>
+            <strong>
+              {blocked.length + proposed.length + blockedTodos.length + decisionTasks.length}
+            </strong>
             <span>Need a decision</span>
           </div>
         </div>
@@ -193,23 +191,23 @@ export default async function HomePage() {
 
           <div className="panel stack-tight">
             <div className="lane-header">
-              <h2>Active epics</h2>
-              <span>{epics.length}</span>
+              <h2>Needs decision</h2>
+              <span>{decisionTasks.length}</span>
             </div>
-            {epics.length === 0 ? (
+            {decisionTasks.length === 0 ? (
               <p className="muted">
-                Long product ideas and multi-workstream initiatives will show up here once Jarvis
-                has decomposed them.
+                Product and architecture decisions that Jarvis cannot safely auto-resolve will show
+                up here.
               </p>
             ) : (
-              epics.map((epic) => (
+              decisionTasks.map((task) => (
                 <Link
                   className="notification-card"
-                  href={`/projects/${epic.projectId}`}
-                  key={epic.id}
+                  href={`/projects/${task.projectId}#epic-task-${task.id}`}
+                  key={task.id}
                 >
-                  <strong>{epic.title}</strong>
-                  <p>{epic.description}</p>
+                  <strong>{task.title}</strong>
+                  <p>{task.details ?? "Decision needed before Jarvis can keep going."}</p>
                 </Link>
               ))
             )}

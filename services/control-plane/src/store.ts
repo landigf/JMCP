@@ -32,6 +32,8 @@ interface WorkspaceDatabase {
   repo_sync_states: PersistedRow
   voice_assets: PersistedRow
   telegram_threads: PersistedRow
+  kernel_sessions: PersistedRow
+  kernel_turns: PersistedRow
   push_subscriptions: PersistedRow
 }
 
@@ -65,6 +67,8 @@ const tableConfigs: TableConfig[] = [
   { collection: "repoSyncStates", table: "repo_sync_states", getId: getEntityId },
   { collection: "voiceAssets", table: "voice_assets", getId: getEntityId },
   { collection: "telegramThreads", table: "telegram_threads", getId: getEntityId },
+  { collection: "kernelSessions", table: "kernel_sessions", getId: getEntityId },
+  { collection: "kernelTurns", table: "kernel_turns", getId: getEntityId },
   { collection: "pushSubscriptions", table: "push_subscriptions", getId: getEntityId },
 ]
 
@@ -91,6 +95,8 @@ function emptySnapshot(): WorkspaceSnapshot {
     repoSyncStates: [],
     voiceAssets: [],
     telegramThreads: [],
+    kernelSessions: [],
+    kernelTurns: [],
     pushSubscriptions: [],
   })
 }

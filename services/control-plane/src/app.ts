@@ -77,6 +77,49 @@ export function createControlPlaneRuntime(config: ControlPlaneConfig) {
     return service.getInbox()
   })
 
+  app.get("/kernel/session/:chatId", async (request, reply) => {
+    const params = request.params as { chatId: string }
+    const session = await service.getKernelSession(params.chatId)
+
+    if (!session) {
+      return reply.code(404).send({ message: "Kernel session not found" })
+    }
+
+    return session
+  })
+
+  app.post("/kernel/start", async (request) => {
+    const body = (request.body ?? {}) as { chatId?: string; targetProjectId?: string | null }
+    if (!body.chatId) {
+      throw new Error("chatId is required")
+    }
+
+    return service.startKernelSession(body.chatId, body.targetProjectId ?? null)
+  })
+
+  app.post("/kernel/stop", async (request, reply) => {
+    const body = (request.body ?? {}) as { chatId?: string }
+    if (!body.chatId) {
+      throw new Error("chatId is required")
+    }
+
+    const session = await service.stopKernelSession(body.chatId)
+    if (!session) {
+      return reply.code(404).send({ message: "Kernel session not found" })
+    }
+
+    return session
+  })
+
+  app.post("/kernel/turn", async (request) => {
+    const body = (request.body ?? {}) as { chatId?: string; text?: string }
+    if (!body.chatId || !body.text) {
+      throw new Error("chatId and text are required")
+    }
+
+    return service.runKernelTurn(body.chatId, body.text)
+  })
+
   app.get("/github/repos", async () => {
     return service.listGitHubRepos()
   })

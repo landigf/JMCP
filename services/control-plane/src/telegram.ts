@@ -1,5 +1,14 @@
 import type { ControlPlaneConfig } from "@jmcp/config"
-import type { Project } from "@jmcp/contracts"
+import {
+  getActiveRuns,
+  getAttentionRuns,
+  getBlockedTodos,
+  getNeedsDecisionTasks,
+  getPendingProposalTodos,
+  getRunnableTodos,
+  type Project,
+  resolveProjectSurfaceUrls,
+} from "@jmcp/contracts"
 import { XaiGrokProvider } from "./providers.js"
 import type { ControlPlaneService } from "./service.js"
 
@@ -145,6 +154,8 @@ export class TelegramPollingBot {
       ["runall", "Queue all queued TODOs"],
       ["todo", "Save a TODO for the focused or specified project"],
       ["epic", "Create a large multi-task epic"],
+      ["kernel", "Enter Claude-Max kernel mode for direct operator control"],
+      ["exit", "Leave kernel mode and return to normal chat routing"],
       ["pause", "Pause a project"],
       ["resume", "Resume a project"],
       ["nightly", "Toggle nightly mode"],
@@ -163,6 +174,13 @@ export class TelegramPollingBot {
       }),
       this.#configureDefaultMenuButton(),
     ])
+
+    const existingThreads = await this.#service.listTelegramThreads()
+    await Promise.allSettled(
+      existingThreads.map((thread) =>
+        this.#configureMenuButtonForChat(thread.chatId, thread.linkedProjectId),
+      ),
+    )
 
     this.#botConfigured = true
   }
@@ -258,6 +276,12 @@ export class TelegramPollingBot {
         return
       }
 
+      const thread = await this.#service.getTelegramThread(chatId)
+      if (thread?.kernelMode) {
+        await this.#handleKernelTurn(chatId, text)
+        return
+      }
+
       const dashboard = await this.#service.getDashboardSnapshot()
       const focusedProject = await this.#getFocusedProject(chatId, dashboard.projects)
       const handled = await this.#handleNaturalLanguage(chatId, text, dashboard.projects)
@@ -305,6 +329,12 @@ export class TelegramPollingBot {
         return
       case "/epic":
         await this.#createEpic(chatId, remainder)
+        return
+      case "/kernel":
+        await this.#enterKernelMode(chatId, remainder)
+        return
+      case "/exit":
+        await this.#exitKernelMode(chatId)
         return
       case "/projects":
         await this.#sendProjects(chatId)
@@ -361,7 +391,7 @@ export class TelegramPollingBot {
       default:
         await this.#sendMessage(
           chatId,
-          "Unknown command. Use /start, /projects, /focus, /project, /repos, /open, /newrepo, /status, /next, /decisions, /proposals, /website, /todos, /runs, /run, /runall, /todo, /epic, /pause, /resume, /nightly, or /inbox.",
+          "Unknown command. Use /start, /projects, /focus, /project, /repos, /open, /newrepo, /status, /next, /decisions, /proposals, /website, /todos, /runs, /run, /runall, /todo, /epic, /kernel, /exit, /pause, /resume, /nightly, or /inbox.",
         )
     }
   }
@@ -463,17 +493,17 @@ export class TelegramPollingBot {
       return
     }
 
+    const pausedProjectIds = new Set(
+      dashboard.automationPolicies.filter((entry) => entry.paused).map((entry) => entry.projectId),
+    )
+
     const lines = dashboard.projects.slice(0, 12).map((project) => {
-      const policy = dashboard.automationPolicies.find((entry) => entry.projectId === project.id)
-      const queuedTodos = dashboard.todos.filter(
-        (todo) => todo.projectId === project.id && ["queued", "ready"].includes(todo.status),
+      const queuedTodos = getRunnableTodos(dashboard.todos, dashboard.taskRuns, project.id).filter(
+        (todo) => !pausedProjectIds.has(todo.projectId),
       ).length
-      const running = dashboard.taskRuns.filter(
-        (run) =>
-          run.projectId === project.id &&
-          ["planning", "running", "validating", "merging"].includes(run.status),
-      ).length
-      return `${project.githubOwner}/${project.githubRepo} · ${policy?.paused ? "paused" : "live"} · ${queuedTodos} queued · ${running} running`
+      const running = getActiveRuns(dashboard.taskRuns, project.id).length
+      const attention = getAttentionRuns(dashboard.taskRuns, project.id).length
+      return `${project.githubOwner}/${project.githubRepo} · ${pausedProjectIds.has(project.id) ? "paused" : "live"} · ${queuedTodos} runnable · ${running} running · ${attention} attention`
     })
 
     await this.#sendMessage(
@@ -518,7 +548,7 @@ export class TelegramPollingBot {
       return
     }
 
-    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    await this.#setChatProjectFocus(chatId, project.id)
     await this.#sendProjectDashboard(chatId, project.id)
   }
 
@@ -543,7 +573,7 @@ export class TelegramPollingBot {
       githubRepo: parsed.repo,
       nightlyEnabled: true,
     })
-    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    await this.#setChatProjectFocus(chatId, project.id)
 
     await this.#sendMessage(
       chatId,
@@ -563,7 +593,7 @@ export class TelegramPollingBot {
     }
 
     const project = await this.#service.createGitHubRepo(parsed)
-    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    await this.#setChatProjectFocus(chatId, project.id)
 
     await this.#sendMessage(
       chatId,
@@ -584,7 +614,7 @@ export class TelegramPollingBot {
 
     const project = resolved.project
     const description = resolved.text
-    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    await this.#setChatProjectFocus(chatId, project.id)
 
     const epic = await this.#service.createEpic(project.id, {
       description,
@@ -612,6 +642,115 @@ export class TelegramPollingBot {
     )
   }
 
+  async #enterKernelMode(chatId: string, remainder: string): Promise<void> {
+    const trimmed = remainder.trim()
+    const dashboard = await this.#service.getDashboardSnapshot()
+    const focusedProject = await this.#getFocusedProject(chatId, dashboard.projects)
+
+    if (trimmed.toLowerCase() === "status") {
+      await this.#sendKernelStatus(chatId)
+      return
+    }
+
+    if (trimmed.toLowerCase().startsWith("target ")) {
+      const targetRef = trimmed.slice("target".length).trim()
+      const { project } = await this.#resolveProjectForCommand(chatId, targetRef, {
+        allowFocusedProject: true,
+        usage: "Usage: /kernel target owner/repo",
+      })
+      if (!project) {
+        return
+      }
+
+      await this.#service.startKernelSession(chatId, project.id)
+      await this.#setChatProjectFocus(chatId, project.id)
+      await this.#sendMessage(
+        chatId,
+        `Kernel target set to ${project.githubOwner}/${project.githubRepo}. Plain text in this chat now routes to Claude-Max kernel mode until you use /exit.`,
+        this.#buildProjectActionRows(project.id),
+      )
+      return
+    }
+
+    const project = trimmed
+      ? (
+          await this.#resolveProjectForCommand(chatId, trimmed, {
+            allowFocusedProject: true,
+            usage: "Usage: /kernel or /kernel owner/repo",
+          })
+        ).project
+      : focusedProject
+
+    const session = await this.#service.startKernelSession(chatId, project?.id ?? null)
+    if (project) {
+      await this.#setChatProjectFocus(chatId, project.id)
+    } else {
+      await this.#configureMenuButtonForChat(chatId, null)
+    }
+
+    await this.#sendMessage(
+      chatId,
+      [
+        "Kernel mode active.",
+        project ? `Target: ${project.githubOwner}/${project.githubRepo}` : "Target: workspace-wide",
+        `Session: ${session.id.slice(0, 8)}`,
+        "Plain text now goes to the Claude-Max kernel until you send /exit.",
+      ].join("\n"),
+      project ? this.#buildProjectActionRows(project.id) : undefined,
+    )
+  }
+
+  async #exitKernelMode(chatId: string): Promise<void> {
+    await this.#service.stopKernelSession(chatId)
+    const focusedProject = await this.#getFocusedProject(
+      chatId,
+      (await this.#service.getDashboardSnapshot()).projects,
+    )
+    await this.#configureMenuButtonForChat(chatId, focusedProject?.id ?? null)
+    await this.#sendMessage(
+      chatId,
+      focusedProject
+        ? `Kernel mode closed. Back to normal Jarvis routing on ${focusedProject.githubOwner}/${focusedProject.githubRepo}.`
+        : "Kernel mode closed. Back to normal Jarvis routing.",
+      focusedProject ? this.#buildProjectActionRows(focusedProject.id) : undefined,
+    )
+  }
+
+  async #sendKernelStatus(chatId: string): Promise<void> {
+    const session = await this.#service.getKernelSession(chatId)
+    const dashboard = await this.#service.getDashboardSnapshot()
+    const focusedProject = await this.#getFocusedProject(chatId, dashboard.projects)
+
+    if (!session) {
+      await this.#sendMessage(chatId, "Kernel mode is not active in this chat.")
+      return
+    }
+
+    const targetProject =
+      dashboard.projects.find((project) => project.id === session.targetProjectId) ?? focusedProject
+
+    await this.#sendMessage(
+      chatId,
+      [
+        "Kernel status",
+        `Session: ${session.id.slice(0, 8)}`,
+        `Target: ${targetProject ? `${targetProject.githubOwner}/${targetProject.githubRepo}` : "workspace"}`,
+        `Last turn: ${session.lastTurnAt ?? "none yet"}`,
+      ].join("\n"),
+      targetProject ? this.#buildProjectActionRows(targetProject.id) : undefined,
+    )
+  }
+
+  async #handleKernelTurn(chatId: string, text: string): Promise<void> {
+    const result = await this.#service.runKernelTurn(chatId, text)
+    const actionRows =
+      result.project?.id !== undefined && result.project !== null
+        ? this.#buildProjectActionRows(result.project.id)
+        : undefined
+
+    await this.#sendMessage(chatId, result.response, actionRows)
+  }
+
   async #sendProjectDashboard(chatId: string, remainder: string): Promise<void> {
     const { project } = await this.#resolveProjectForCommand(chatId, remainder, {
       allowFocusedProject: true,
@@ -622,24 +761,18 @@ export class TelegramPollingBot {
       return
     }
 
-    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    await this.#setChatProjectFocus(chatId, project.id)
     const summary = await this.#service.getProjectSummary(project.id)
     if (!summary) {
       await this.#sendMessage(chatId, "Project summary not available.")
       return
     }
 
-    const queuedTodos = summary.todos.filter((todo) => ["queued", "ready"].includes(todo.status))
-    const runningRuns = summary.taskRuns.filter((run) =>
-      ["planning", "running", "validating", "merging"].includes(run.status),
-    )
-    const blockedRuns = summary.taskRuns.filter((run) =>
-      ["blocked", "needs_approval"].includes(run.status),
-    )
-    const pendingProposals = summary.todos.filter(
-      (todo) => todo.source === "assistant" && todo.approvalStatus === "pending",
-    )
-    const pendingDecisions = summary.epicTasks.filter((task) => task.status === "needs_decision")
+    const queuedTodos = getRunnableTodos(summary.todos, summary.taskRuns, project.id)
+    const runningRuns = getActiveRuns(summary.taskRuns, project.id)
+    const blockedRuns = getAttentionRuns(summary.taskRuns, project.id)
+    const pendingProposals = getPendingProposalTodos(summary.todos, project.id)
+    const pendingDecisions = getNeedsDecisionTasks(summary.epicTasks, project.id)
     const projectSite = this.#buildProjectSiteUrl(project)
 
     await this.#sendMessage(
@@ -674,6 +807,9 @@ export class TelegramPollingBot {
         ],
         [
           { text: "Proposals", callback_data: `project_proposals:${project.id}` },
+          { text: "Kernel", callback_data: `project_kernel:${project.id}` },
+        ],
+        [
           {
             text: summary.automationPolicy.paused ? "Resume" : "Pause",
             callback_data: `${summary.automationPolicy.paused ? "project_resume" : "project_pause"}:${project.id}`,
@@ -706,38 +842,35 @@ export class TelegramPollingBot {
     const dashboard = await this.#service.getDashboardSnapshot()
     const explicitProject = remainder.trim()
     if (!explicitProject) {
-      const running = dashboard.taskRuns.filter((run) =>
-        ["planning", "running", "validating", "merging"].includes(run.status),
+      const pausedProjectIds = new Set(
+        dashboard.automationPolicies
+          .filter((policy) => policy.paused)
+          .map((policy) => policy.projectId),
+      )
+      const running = getActiveRuns(dashboard.taskRuns).length
+      const blocked = getAttentionRuns(dashboard.taskRuns).length
+      const queued = getRunnableTodos(dashboard.todos, dashboard.taskRuns).filter(
+        (todo) => !pausedProjectIds.has(todo.projectId),
       ).length
-      const blocked = dashboard.taskRuns.filter((run) =>
-        ["blocked", "needs_approval"].includes(run.status),
-      ).length
-      const queued = dashboard.todos.filter((todo) =>
-        ["queued", "ready"].includes(todo.status),
-      ).length
-      const epics = dashboard.epics.filter((epic) =>
-        ["planned", "active", "blocked"].includes(epic.status),
-      ).length
+      const proposals = getPendingProposalTodos(dashboard.todos).length
+      const decisions = getNeedsDecisionTasks(dashboard.epicTasks).length
+      const blockedTodos = getBlockedTodos(dashboard.todos).length
       const projectLines = dashboard.projects
         .map((project) => {
-          const queuedTodos = dashboard.todos.filter(
-            (todo) => todo.projectId === project.id && ["queued", "ready"].includes(todo.status),
-          ).length
-          const activeRuns = dashboard.taskRuns.filter(
-            (run) =>
-              run.projectId === project.id &&
-              ["planning", "running", "validating", "merging"].includes(run.status),
-          ).length
-          const blockedRuns = dashboard.taskRuns.filter(
-            (run) =>
-              run.projectId === project.id && ["blocked", "needs_approval"].includes(run.status),
-          ).length
+          const queuedTodos = getRunnableTodos(
+            dashboard.todos,
+            dashboard.taskRuns,
+            project.id,
+          ).filter((todo) => !pausedProjectIds.has(todo.projectId)).length
+          const activeRuns = getActiveRuns(dashboard.taskRuns, project.id).length
+          const blockedRuns = getAttentionRuns(dashboard.taskRuns, project.id).length
+          const paused = pausedProjectIds.has(project.id)
 
-          if (queuedTodos === 0 && activeRuns === 0 && blockedRuns === 0) {
+          if (queuedTodos === 0 && activeRuns === 0 && blockedRuns === 0 && !paused) {
             return null
           }
 
-          return `• ${project.githubRepo}: ${queuedTodos} queued, ${activeRuns} running, ${blockedRuns} blocked`
+          return `• ${project.githubRepo}: ${queuedTodos} runnable, ${activeRuns} running, ${blockedRuns} attention${paused ? ", paused" : ""}`
         })
         .filter(Boolean)
         .slice(0, 8)
@@ -747,9 +880,11 @@ export class TelegramPollingBot {
         [
           "Workspace status",
           `Running: ${running}`,
-          `Blocked: ${blocked}`,
-          `Queued TODOs: ${queued}`,
-          `Active epics: ${epics}`,
+          `Attention: ${blocked}`,
+          `Runnable TODOs: ${queued}`,
+          `Decisions: ${decisions}`,
+          `Jarvis proposals: ${proposals}`,
+          `Blocked queue items: ${blockedTodos}`,
           projectLines.length > 0 ? "" : null,
           projectLines.length > 0 ? "Queued work by project" : null,
           ...projectLines,
@@ -791,7 +926,7 @@ export class TelegramPollingBot {
       return
     }
 
-    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    await this.#setChatProjectFocus(chatId, project.id)
     const url = this.#buildProjectSiteUrl(project)
     if (!url) {
       await this.#sendMessage(
@@ -818,24 +953,18 @@ export class TelegramPollingBot {
         await this.#sendMessage(chatId, `Project not found: ${explicitProject}`)
         return
       }
-      await this.#service.linkTelegramThreadToProject(chatId, project.id)
+      await this.#setChatProjectFocus(chatId, project.id)
       const summary = await this.#service.getProjectSummary(project.id)
       if (!summary) {
         await this.#sendMessage(chatId, "Project summary not available.")
         return
       }
 
-      const activeRun = summary.taskRuns.find((run) =>
-        ["planning", "running", "validating", "merging"].includes(run.status),
-      )
-      const blockedRun = summary.taskRuns.find((run) =>
-        ["blocked", "needs_approval"].includes(run.status),
-      )
-      const nextTodo = summary.todos.find((todo) => ["queued", "ready"].includes(todo.status))
-      const nextDecision = summary.epicTasks.find((task) => task.status === "needs_decision")
-      const nextProposal = summary.todos.find(
-        (todo) => todo.source === "assistant" && todo.approvalStatus === "pending",
-      )
+      const activeRun = getActiveRuns(summary.taskRuns, project.id)[0] ?? null
+      const blockedRun = getAttentionRuns(summary.taskRuns, project.id)[0] ?? null
+      const nextTodo = getRunnableTodos(summary.todos, summary.taskRuns, project.id)[0] ?? null
+      const nextDecision = getNeedsDecisionTasks(summary.epicTasks, project.id)[0] ?? null
+      const nextProposal = getPendingProposalTodos(summary.todos, project.id)[0] ?? null
 
       await this.#sendMessage(
         chatId,
@@ -864,21 +993,11 @@ export class TelegramPollingBot {
     const dashboard = await this.#service.getDashboardSnapshot()
     const lines = dashboard.projects
       .map((project) => {
-        const activeRun = dashboard.taskRuns.find(
-          (run) =>
-            run.projectId === project.id &&
-            ["planning", "running", "validating", "merging"].includes(run.status),
-        )
-        const blockedRun = dashboard.taskRuns.find(
-          (run) =>
-            run.projectId === project.id && ["blocked", "needs_approval"].includes(run.status),
-        )
-        const nextTodo = dashboard.todos.find(
-          (todo) => todo.projectId === project.id && ["queued", "ready"].includes(todo.status),
-        )
-        const nextDecision = dashboard.epicTasks.find(
-          (task) => task.projectId === project.id && task.status === "needs_decision",
-        )
+        const activeRun = getActiveRuns(dashboard.taskRuns, project.id)[0] ?? null
+        const blockedRun = getAttentionRuns(dashboard.taskRuns, project.id)[0] ?? null
+        const nextTodo =
+          getRunnableTodos(dashboard.todos, dashboard.taskRuns, project.id)[0] ?? null
+        const nextDecision = getNeedsDecisionTasks(dashboard.epicTasks, project.id)[0] ?? null
 
         const topItem =
           blockedRun?.objective ?? activeRun?.objective ?? nextDecision?.title ?? nextTodo?.title
@@ -918,7 +1037,7 @@ export class TelegramPollingBot {
         await this.#sendMessage(chatId, `Project not found: ${explicitProject}`)
         return
       }
-      await this.#service.linkTelegramThreadToProject(chatId, project.id)
+      await this.#setChatProjectFocus(chatId, project.id)
       const summary = await this.#service.getProjectSummary(project.id)
       if (!summary) {
         await this.#sendMessage(chatId, "Project summary not available.")
@@ -984,7 +1103,7 @@ export class TelegramPollingBot {
         await this.#sendMessage(chatId, `Project not found: ${explicitProject}`)
         return
       }
-      await this.#service.linkTelegramThreadToProject(chatId, project.id)
+      await this.#setChatProjectFocus(chatId, project.id)
       const summary = await this.#service.getProjectSummary(project.id)
       if (!summary) {
         await this.#sendMessage(chatId, "Project summary not available.")
@@ -1070,9 +1189,7 @@ export class TelegramPollingBot {
       const groups = dashboard.projects
         .map((project) => ({
           project,
-          todos: dashboard.todos.filter(
-            (todo) => todo.projectId === project.id && ["queued", "ready"].includes(todo.status),
-          ),
+          todos: getRunnableTodos(dashboard.todos, dashboard.taskRuns, project.id),
         }))
         .filter((entry) => entry.todos.length > 0)
 
@@ -1114,14 +1231,14 @@ export class TelegramPollingBot {
       return
     }
 
-    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    await this.#setChatProjectFocus(chatId, project.id)
     const summary = await this.#service.getProjectSummary(project.id)
     if (!summary) {
       await this.#sendMessage(chatId, "Project summary not available.")
       return
     }
 
-    const queuedTodos = summary.todos.filter((todo) => ["queued", "ready"].includes(todo.status))
+    const queuedTodos = getRunnableTodos(summary.todos, summary.taskRuns, project.id)
     if (queuedTodos.length === 0) {
       await this.#sendMessage(
         chatId,
@@ -1157,11 +1274,10 @@ export class TelegramPollingBot {
     const explicitProject = remainder.trim()
 
     if (!explicitProject) {
-      const interestingRuns = dashboard.taskRuns.filter((run) =>
-        ["planning", "running", "validating", "merging", "blocked", "needs_approval"].includes(
-          run.status,
-        ),
-      )
+      const interestingRuns = [
+        ...getActiveRuns(dashboard.taskRuns),
+        ...getAttentionRuns(dashboard.taskRuns),
+      ]
 
       if (interestingRuns.length === 0) {
         await this.#sendMessage(chatId, "No active or blocked runs right now.")
@@ -1193,18 +1309,17 @@ export class TelegramPollingBot {
       return
     }
 
-    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    await this.#setChatProjectFocus(chatId, project.id)
     const summary = await this.#service.getProjectSummary(project.id)
     if (!summary) {
       await this.#sendMessage(chatId, "Project summary not available.")
       return
     }
 
-    const interestingRuns = summary.taskRuns.filter((run) =>
-      ["planning", "running", "validating", "merging", "blocked", "needs_approval"].includes(
-        run.status,
-      ),
-    )
+    const interestingRuns = [
+      ...getActiveRuns(summary.taskRuns, project.id),
+      ...getAttentionRuns(summary.taskRuns, project.id),
+    ]
 
     if (interestingRuns.length === 0) {
       await this.#sendMessage(
@@ -1232,7 +1347,7 @@ export class TelegramPollingBot {
           { text: "TODOs", callback_data: `project_todos:${project.id}` },
         ],
         ...interestingRuns
-          .filter((run) => ["blocked", "needs_approval"].includes(run.status))
+          .filter((run) => ["blocked", "needs_approval", "preempted"].includes(run.status))
           .slice(0, 2)
           .map((run) => [
             {
@@ -1301,7 +1416,7 @@ export class TelegramPollingBot {
 
     const project = resolved.project
     const objective = resolved.text
-    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    await this.#setChatProjectFocus(chatId, project.id)
 
     const response = await this.#service.postProjectMessage(project.id, {
       text: objective,
@@ -1338,7 +1453,7 @@ export class TelegramPollingBot {
 
     const project = resolved.project
     const title = resolved.text
-    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    await this.#setChatProjectFocus(chatId, project.id)
 
     const result = await this.#service.createTodo(project.id, {
       title,
@@ -1384,7 +1499,7 @@ export class TelegramPollingBot {
       return
     }
 
-    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    await this.#setChatProjectFocus(chatId, project.id)
     const policy = paused
       ? await this.#service.pauseProject(project.id)
       : await this.#service.resumeProject(project.id)
@@ -1420,7 +1535,7 @@ export class TelegramPollingBot {
       return
     }
 
-    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    await this.#setChatProjectFocus(chatId, project.id)
     await this.#service.setNightly(project.id, lastToken === "on")
     await this.#sendMessage(
       chatId,
@@ -1472,7 +1587,7 @@ export class TelegramPollingBot {
             githubRepo: repo,
             nightlyEnabled: true,
           })
-          await this.#service.linkTelegramThreadToProject(chatId, project.id)
+          await this.#setChatProjectFocus(chatId, project.id)
           await this.#sendMessage(
             chatId,
             `Opened ${project.githubOwner}/${project.githubRepo} and focused this chat on it.`,
@@ -1482,42 +1597,47 @@ export class TelegramPollingBot {
         break
       }
       case "project_focus": {
-        await this.#service.linkTelegramThreadToProject(chatId, projectId)
+        await this.#setChatProjectFocus(chatId, projectId)
         await this.#sendProjectDashboard(chatId, projectId)
         break
       }
       case "project_status": {
-        await this.#service.linkTelegramThreadToProject(chatId, projectId)
+        await this.#setChatProjectFocus(chatId, projectId)
         await this.#sendProjectDashboard(chatId, projectId)
         break
       }
       case "project_todos": {
-        await this.#service.linkTelegramThreadToProject(chatId, projectId)
+        await this.#setChatProjectFocus(chatId, projectId)
         await this.#sendTodos(chatId, projectId)
         break
       }
       case "project_runs": {
-        await this.#service.linkTelegramThreadToProject(chatId, projectId)
+        await this.#setChatProjectFocus(chatId, projectId)
         await this.#sendRuns(chatId, projectId)
         break
       }
       case "project_next": {
-        await this.#service.linkTelegramThreadToProject(chatId, projectId)
+        await this.#setChatProjectFocus(chatId, projectId)
         await this.#sendNext(chatId, projectId)
         break
       }
       case "project_decisions": {
-        await this.#service.linkTelegramThreadToProject(chatId, projectId)
+        await this.#setChatProjectFocus(chatId, projectId)
         await this.#sendDecisions(chatId, projectId)
         break
       }
       case "project_proposals": {
-        await this.#service.linkTelegramThreadToProject(chatId, projectId)
+        await this.#setChatProjectFocus(chatId, projectId)
         await this.#sendProposals(chatId, projectId)
         break
       }
+      case "project_kernel": {
+        await this.#setChatProjectFocus(chatId, projectId)
+        await this.#enterKernelMode(chatId, projectId)
+        break
+      }
       case "project_runall": {
-        await this.#service.linkTelegramThreadToProject(chatId, projectId)
+        await this.#setChatProjectFocus(chatId, projectId)
         await this.#runAllTodos(chatId, projectId)
         break
       }
@@ -1708,12 +1828,37 @@ export class TelegramPollingBot {
     return projects.find((project) => project.id === thread.linkedProjectId) ?? null
   }
 
+  async #setChatProjectFocus(chatId: string, projectId: string | null): Promise<void> {
+    await this.#setChatProjectFocus(chatId, projectId)
+    await this.#configureMenuButtonForChat(chatId, projectId)
+  }
+
+  async #configureMenuButtonForChat(chatId: string, projectId: string | null): Promise<void> {
+    const base = this.#config.JMCP_PUBLIC_WEB_URL?.trim()
+    if (!base?.startsWith("https://")) {
+      return
+    }
+
+    const url = projectId ? this.#buildProjectUrl(projectId) : base
+    await this.#telegramApi("setChatMenuButton", {
+      chat_id: chatId,
+      menu_button: {
+        type: "web_app",
+        text: projectId ? "Open project" : "Open Jarvis",
+        web_app: {
+          url,
+        },
+      },
+    })
+  }
+
   #buildProjectActionRows(
     projectId: string,
   ): Array<Array<{ text: string; callback_data?: string; url?: string }>> {
+    const dashboardUrl = this.#buildProjectUrl(projectId)
     return [
       [
-        { text: "Open dashboard", url: this.#buildProjectUrl(projectId) },
+        { text: "Open dashboard", url: dashboardUrl },
         { text: "Status", callback_data: `project_status:${projectId}` },
       ],
       [
@@ -1724,7 +1869,10 @@ export class TelegramPollingBot {
         { text: "Runs", callback_data: `project_runs:${projectId}` },
         { text: "Proposals", callback_data: `project_proposals:${projectId}` },
       ],
-      [{ text: "Run all", callback_data: `project_runall:${projectId}` }],
+      [
+        { text: "Run all", callback_data: `project_runall:${projectId}` },
+        { text: "Kernel", callback_data: `project_kernel:${projectId}` },
+      ],
     ]
   }
 
@@ -1734,21 +1882,42 @@ export class TelegramPollingBot {
       queuedRuns: Array<{ objective: string }>
       touchedProjects: Array<{ githubOwner: string; githubRepo: string }>
       skippedPausedProjects: Array<{ githubOwner: string; githubRepo: string }>
+      runnableTodoCount: number
+      alreadyTrackedCount: number
+      blockedTodoCount: number
+      proposalCount: number
+      decisionCount: number
     },
   ): string {
     if (result.queuedRuns.length === 0) {
-      if (result.skippedPausedProjects.length > 0) {
-        return `${scopeLabel}: no runs queued.\nPaused projects were skipped: ${result.skippedPausedProjects
-          .map((project) => `${project.githubOwner}/${project.githubRepo}`)
-          .join(", ")}`
-      }
-
-      return `${scopeLabel}: no queued TODOs were ready to run.`
+      return [
+        `${scopeLabel}: no runnable TODOs were queued.`,
+        result.alreadyTrackedCount > 0
+          ? `Already tracked by open runs: ${result.alreadyTrackedCount}`
+          : null,
+        result.blockedTodoCount > 0 ? `Blocked TODOs: ${result.blockedTodoCount}` : null,
+        result.proposalCount > 0 ? `Jarvis proposals: ${result.proposalCount}` : null,
+        result.decisionCount > 0 ? `Decisions waiting: ${result.decisionCount}` : null,
+        result.skippedPausedProjects.length > 0
+          ? `Paused projects skipped: ${result.skippedPausedProjects
+              .map((project) => `${project.githubOwner}/${project.githubRepo}`)
+              .join(", ")}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join("\n")
     }
 
     return [
       `${scopeLabel}: queued ${result.queuedRuns.length} run${result.queuedRuns.length === 1 ? "" : "s"}.`,
+      `Runnable TODOs considered: ${result.runnableTodoCount}`,
       `Projects touched: ${result.touchedProjects.map((project) => `${project.githubOwner}/${project.githubRepo}`).join(", ")}`,
+      result.alreadyTrackedCount > 0
+        ? `Skipped because already tracked by open runs: ${result.alreadyTrackedCount}`
+        : null,
+      result.blockedTodoCount > 0 ? `Blocked TODOs left alone: ${result.blockedTodoCount}` : null,
+      result.proposalCount > 0 ? `Jarvis proposals not run: ${result.proposalCount}` : null,
+      result.decisionCount > 0 ? `Decisions not run: ${result.decisionCount}` : null,
       result.skippedPausedProjects.length > 0
         ? `Paused projects skipped: ${result.skippedPausedProjects
             .map((project) => `${project.githubOwner}/${project.githubRepo}`)
@@ -1914,26 +2083,7 @@ export class TelegramPollingBot {
   }
 
   #buildProjectSiteUrl(project: Project): string | null {
-    const base = this.#config.JMCP_PUBLIC_WEB_URL?.replace(/\/$/, "")
-    const repoRef = `${project.githubOwner}/${project.githubRepo}`.toLowerCase()
-
-    if (repoRef === "landigf/papers") {
-      return base ? `${base}/papers` : null
-    }
-
-    if (repoRef === "landigf/landigf.github.io") {
-      return "https://landigf.github.io"
-    }
-
-    if (repoRef === "landigf/broletter") {
-      return "https://landigf.github.io/Broletter/"
-    }
-
-    if (repoRef === "landigf/jmcp") {
-      return base ?? null
-    }
-
-    return null
+    return resolveProjectSurfaceUrls(project, this.#config.JMCP_PUBLIC_WEB_URL).productUrl
   }
 
   async #handleNaturalLanguage(

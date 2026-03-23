@@ -148,6 +148,56 @@ async function loadKeychainSecret(input: {
   }
 }
 
+async function loadTailscalePublicUrl(): Promise<string | null> {
+  try {
+    const { stdout } = await execFile("tailscale", ["status", "--json"])
+    const payload = JSON.parse(stdout) as {
+      Self?: {
+        DNSName?: string | null
+      }
+    }
+    const dnsName = payload.Self?.DNSName?.trim().replace(/\.$/, "")
+    if (!dnsName) {
+      return null
+    }
+
+    return `https://${dnsName}`
+  } catch {
+    return null
+  }
+}
+
+function maybeRewritePublicUrlWithTailscale(
+  currentValue: string | undefined,
+  tailscaleValue: string | null,
+): string | undefined {
+  if (!tailscaleValue) {
+    return currentValue
+  }
+
+  if (!currentValue) {
+    return tailscaleValue
+  }
+
+  try {
+    const parsedCurrent = new URL(currentValue)
+    const parsedTailscale = new URL(tailscaleValue)
+
+    if (
+      parsedCurrent.hostname.endsWith(".ts.net") &&
+      parsedCurrent.hostname.toLowerCase() !== parsedTailscale.hostname.toLowerCase()
+    ) {
+      parsedCurrent.hostname = parsedTailscale.hostname
+      parsedCurrent.protocol = parsedTailscale.protocol
+      return parsedCurrent.toString().replace(/\/$/, "")
+    }
+  } catch {
+    return currentValue
+  }
+
+  return currentValue
+}
+
 export async function resolveControlPlaneConfig(
   env: NodeJS.ProcessEnv = process.env,
   options: ResolveControlPlaneConfigOptions = {},
@@ -182,13 +232,26 @@ export async function resolveControlPlaneConfig(
   })
 
   if (!keychainSecret) {
-    return resolvedConfig
+    const tailscaleUrl = await loadTailscalePublicUrl()
+    return {
+      ...resolvedConfig,
+      JMCP_PUBLIC_WEB_URL: maybeRewritePublicUrlWithTailscale(
+        resolvedConfig.JMCP_PUBLIC_WEB_URL,
+        tailscaleUrl,
+      ),
+    }
   }
+
+  const tailscaleUrl = await loadTailscalePublicUrl()
 
   return {
     ...resolvedConfig,
     JMCP_XAI_API_KEY: keychainSecret,
     JMCP_XAI_API_KEY_SOURCE: "keychain",
+    JMCP_PUBLIC_WEB_URL: maybeRewritePublicUrlWithTailscale(
+      resolvedConfig.JMCP_PUBLIC_WEB_URL,
+      tailscaleUrl,
+    ),
   }
 }
 

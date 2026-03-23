@@ -1,6 +1,11 @@
 import Image from "next/image"
 import QRCode from "qrcode"
-import { getProjectShareUrl, getShareMode, getWorkspaceShareUrl } from "../lib/share"
+import {
+  buildProjectShareUrl,
+  buildWorkspaceShareUrl,
+  getResolvedPublicWebBaseUrl,
+  getShareMode,
+} from "../lib/share"
 import { ShareCopyButton } from "./share-copy-button"
 
 type ShareEntry = {
@@ -25,8 +30,9 @@ async function buildShareEntry(label: string, url: string): Promise<ShareEntry> 
 }
 
 export async function SharePanel(props: { projectId?: string; projectName?: string }) {
-  const workspaceUrl = getWorkspaceShareUrl()
-  const projectUrl = props.projectId ? getProjectShareUrl(props.projectId) : null
+  const publicBaseUrl = await getResolvedPublicWebBaseUrl()
+  const workspaceUrl = buildWorkspaceShareUrl(publicBaseUrl)
+  const projectUrl = props.projectId ? buildProjectShareUrl(publicBaseUrl, props.projectId) : null
   const shareMode = getShareMode(workspaceUrl)
 
   if (!workspaceUrl) {
@@ -37,7 +43,8 @@ export async function SharePanel(props: { projectId?: string; projectName?: stri
           <span>Pending URL</span>
         </div>
         <p className="muted">
-          Set <code>NEXT_PUBLIC_JMCP_PUBLIC_WEB_URL</code> to your private Tailscale Jarvis URL to
+          Jarvis could not infer a stable public URL for this request. Set{" "}
+          <code>NEXT_PUBLIC_JMCP_PUBLIC_WEB_URL</code> to your private Tailscale Jarvis URL to
           unlock direct links and QR codes for your phone.
         </p>
       </div>

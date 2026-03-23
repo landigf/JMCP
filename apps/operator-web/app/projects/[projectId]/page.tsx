@@ -1,3 +1,10 @@
+import {
+  getActiveRuns,
+  getAttentionRuns,
+  getBlockedTodos,
+  getPendingProposalTodos,
+  getRunnableTodos,
+} from "@jmcp/contracts"
 import Link from "next/link"
 import { EpicTaskActions } from "../../../components/epic-task-actions"
 import { ProjectAutomationControls } from "../../../components/project-automation-controls"
@@ -15,9 +22,7 @@ import { parseAssistantReply } from "../../../lib/reply"
 export default async function ProjectPage(props: { params: Promise<{ projectId: string }> }) {
   const params = await props.params
   const project = await getProject(params.projectId)
-  const activeRuns = project.taskRuns.filter((run) =>
-    ["planning", "running", "validating", "merging"].includes(run.status),
-  )
+  const activeRuns = getActiveRuns(project.taskRuns, project.project.id)
   const openRuns = project.taskRuns.filter((run) =>
     [
       "queued",
@@ -29,18 +34,10 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
       "blocked",
     ].includes(run.status),
   )
-  const blockedRuns = project.taskRuns.filter((run) =>
-    ["blocked", "needs_approval"].includes(run.status),
-  )
-  const pendingProposals = project.todos.filter(
-    (todo) => todo.source === "assistant" && todo.approvalStatus === "pending",
-  )
-  const blockedTodos = project.todos.filter(
-    (todo) => todo.approvalStatus === "approved" && todo.status === "blocked",
-  )
-  const readyTodos = project.todos.filter(
-    (todo) => todo.approvalStatus === "approved" && ["queued", "ready"].includes(todo.status),
-  )
+  const blockedRuns = getAttentionRuns(project.taskRuns, project.project.id)
+  const pendingProposals = getPendingProposalTodos(project.todos, project.project.id)
+  const blockedTodos = getBlockedTodos(project.todos, project.project.id)
+  const readyTodos = getRunnableTodos(project.todos, project.taskRuns, project.project.id)
   const epicGroups = project.epics.map((epic) => ({
     epic,
     tasks: project.epicTasks.filter((task) => task.epicId === epic.id),

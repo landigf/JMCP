@@ -11,6 +11,7 @@ export const taskRunStatusSchema = z.enum([
   "needs_approval",
   "completed",
   "blocked",
+  "preempted",
   "paused",
   "cancelled",
   "failed",
@@ -65,6 +66,7 @@ export const runStepKindSchema = z.enum([
 export const runStepStatusSchema = z.enum(["info", "running", "completed", "failed"])
 export const attemptPhaseSchema = z.enum(["planner", "executor", "repair", "reviewer", "recap"])
 export const attemptStatusSchema = z.enum(["running", "completed", "failed"])
+export const taskRunSourceSchema = z.enum(["normal", "kernel"])
 
 export const replyLinkSchema = z.object({
   label: z.string(),
@@ -259,6 +261,7 @@ export const taskRunSchema = z.object({
   projectId: z.string(),
   sourceTodoId: z.string().nullable(),
   objective: z.string(),
+  source: taskRunSourceSchema.default("normal"),
   status: taskRunStatusSchema,
   branchName: z.string().nullable(),
   executorId: z.string().nullable(),
@@ -270,6 +273,8 @@ export const taskRunSchema = z.object({
   attemptCount: z.number().int().nonnegative().default(0),
   lastErrorSignature: z.string().nullable().default(null),
   mergeState: z.string().nullable().default(null),
+  preemptedByTaskRunId: z.string().nullable().default(null),
+  resumedAsTaskRunId: z.string().nullable().default(null),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -377,9 +382,33 @@ export const telegramThreadStateSchema = z.object({
   id: z.string(),
   chatId: z.string(),
   linkedProjectId: z.string().nullable(),
+  kernelMode: z.boolean().default(false),
+  kernelSessionId: z.string().nullable().default(null),
+  kernelTargetProjectId: z.string().nullable().default(null),
   lastUpdateId: z.number().int().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+})
+
+export const kernelSessionSchema = z.object({
+  id: z.string(),
+  chatId: z.string(),
+  targetProjectId: z.string().nullable().default(null),
+  status: z.enum(["active", "closed"]),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  lastTurnAt: z.string().nullable().default(null),
+})
+
+export const kernelTurnSchema = z.object({
+  id: z.string(),
+  kernelSessionId: z.string(),
+  projectId: z.string().nullable().default(null),
+  action: z.enum(["inspect", "mutate", "control"]),
+  prompt: z.string(),
+  response: z.string(),
+  status: z.enum(["completed", "failed"]),
+  createdAt: z.string(),
 })
 
 export const pushSubscriptionRecordSchema = z.object({
@@ -415,6 +444,8 @@ export const workspaceSnapshotSchema = z.object({
   repoSyncStates: z.array(repoSyncStateSchema),
   voiceAssets: z.array(voiceAssetSchema),
   telegramThreads: z.array(telegramThreadStateSchema),
+  kernelSessions: z.array(kernelSessionSchema),
+  kernelTurns: z.array(kernelTurnSchema),
   pushSubscriptions: z.array(pushSubscriptionRecordSchema),
 })
 
@@ -459,6 +490,177 @@ export const dashboardSnapshotSchema = z.object({
   recaps: z.array(recapSchema),
   executors: z.array(executorSchema),
 })
+
+export type ProjectSurface = {
+  dashboardUrl: string | null
+  productUrl: string | null
+  shareUrl: string | null
+}
+
+const activeTaskRunStatuses = ["planning", "running", "validating", "merging"] as const
+const attentionTaskRunStatuses = ["blocked", "needs_approval", "preempted"] as const
+const openTaskRunStatuses = [
+  "queued",
+  "planning",
+  "running",
+  "validating",
+  "merging",
+  "needs_approval",
+  "blocked",
+] as const
+const runnableTodoStatuses = ["queued", "ready"] as const
+
+function normalizeWorkLabelInternal(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+export function isOpenTaskRunStatus(status: TaskRunStatus): boolean {
+  return openTaskRunStatuses.includes(status as (typeof openTaskRunStatuses)[number])
+}
+
+export function isActiveTaskRunStatus(status: TaskRunStatus): boolean {
+  return activeTaskRunStatuses.includes(status as (typeof activeTaskRunStatuses)[number])
+}
+
+export function isAttentionTaskRunStatus(status: TaskRunStatus): boolean {
+  return attentionTaskRunStatuses.includes(status as (typeof attentionTaskRunStatuses)[number])
+}
+
+export function isRunnableTodoStatus(status: TodoStatus): boolean {
+  return runnableTodoStatuses.includes(status as (typeof runnableTodoStatuses)[number])
+}
+
+export function isProposalTodo(
+  todo: Pick<TodoItem, "source" | "approvalStatus">,
+): boolean {
+  return todo.source === "assistant" && todo.approvalStatus === "pending"
+}
+
+export function isBlockedTodo(todo: Pick<TodoItem, "status" | "approvalStatus">): boolean {
+  return todo.approvalStatus === "approved" && todo.status === "blocked"
+}
+
+export function isDecisionEpicTask(task: Pick<EpicTask, "status">): boolean {
+  return task.status === "needs_decision"
+}
+
+function hasMatchingOpenRun(todo: TodoItem, taskRuns: TaskRun[]): boolean {
+  const normalizedTitle = normalizeWorkLabelInternal(todo.title)
+  return taskRuns.some(
+    (run) =>
+      run.projectId === todo.projectId &&
+      isOpenTaskRunStatus(run.status) &&
+      (run.sourceTodoId === todo.id ||
+        normalizeWorkLabelInternal(run.objective) === normalizedTitle),
+  )
+}
+
+export function isRunnableTodo(todo: TodoItem, taskRuns: TaskRun[]): boolean {
+  return (
+    todo.approvalStatus === "approved" &&
+    isRunnableTodoStatus(todo.status) &&
+    !hasMatchingOpenRun(todo, taskRuns)
+  )
+}
+
+export function getRunnableTodos(
+  todos: TodoItem[],
+  taskRuns: TaskRun[],
+  projectId?: string | null,
+): TodoItem[] {
+  return todos.filter(
+    (todo) => (projectId ? todo.projectId === projectId : true) && isRunnableTodo(todo, taskRuns),
+  )
+}
+
+export function getActiveRuns(taskRuns: TaskRun[], projectId?: string | null): TaskRun[] {
+  return taskRuns.filter(
+    (run) => (projectId ? run.projectId === projectId : true) && isActiveTaskRunStatus(run.status),
+  )
+}
+
+export function getAttentionRuns(taskRuns: TaskRun[], projectId?: string | null): TaskRun[] {
+  return taskRuns.filter(
+    (run) =>
+      (projectId ? run.projectId === projectId : true) && isAttentionTaskRunStatus(run.status),
+  )
+}
+
+export function getPendingProposalTodos(
+  todos: TodoItem[],
+  projectId?: string | null,
+): TodoItem[] {
+  return todos.filter(
+    (todo) => (projectId ? todo.projectId === projectId : true) && isProposalTodo(todo),
+  )
+}
+
+export function getBlockedTodos(todos: TodoItem[], projectId?: string | null): TodoItem[] {
+  return todos.filter(
+    (todo) => (projectId ? todo.projectId === projectId : true) && isBlockedTodo(todo),
+  )
+}
+
+export function getNeedsDecisionTasks(
+  epicTasks: EpicTask[],
+  projectId?: string | null,
+): EpicTask[] {
+  return epicTasks.filter(
+    (task) => (projectId ? task.projectId === projectId : true) && isDecisionEpicTask(task),
+  )
+}
+
+export function resolveProjectSurfaceUrls(
+  project: Project,
+  publicBaseUrl?: string | null,
+): ProjectSurface {
+  const base = publicBaseUrl?.trim().replace(/\/$/, "") || null
+  const dashboardUrl = base ? `${base}/projects/${project.id}` : null
+  const repoRef = `${project.githubOwner}/${project.githubRepo}`.toLowerCase()
+
+  if (repoRef === "landigf/papers") {
+    return {
+      dashboardUrl,
+      productUrl: base ? `${base}/papers` : null,
+      shareUrl: dashboardUrl,
+    }
+  }
+
+  if (repoRef === "landigf/landigf.github.io") {
+    return {
+      dashboardUrl,
+      productUrl: "https://landigf.github.io",
+      shareUrl: dashboardUrl,
+    }
+  }
+
+  if (repoRef === "landigf/broletter") {
+    return {
+      dashboardUrl,
+      productUrl: "https://landigf.github.io/Broletter/",
+      shareUrl: dashboardUrl,
+    }
+  }
+
+  if (repoRef === "landigf/jmcp") {
+    return {
+      dashboardUrl,
+      productUrl: base,
+      shareUrl: dashboardUrl,
+    }
+  }
+
+  return {
+    dashboardUrl,
+    productUrl: null,
+    shareUrl: dashboardUrl,
+  }
+}
 
 export const createProjectInputSchema = z.object({
   name: z.string().min(1),
@@ -711,6 +913,8 @@ export type ApprovalRequest = z.infer<typeof approvalRequestSchema>
 export type RepoSyncState = z.infer<typeof repoSyncStateSchema>
 export type VoiceAsset = z.infer<typeof voiceAssetSchema>
 export type TelegramThreadState = z.infer<typeof telegramThreadStateSchema>
+export type KernelSession = z.infer<typeof kernelSessionSchema>
+export type KernelTurn = z.infer<typeof kernelTurnSchema>
 export type PushSubscriptionRecord = z.infer<typeof pushSubscriptionRecordSchema>
 export type WorkspaceSnapshot = z.infer<typeof workspaceSnapshotSchema>
 export type ProjectSummary = z.infer<typeof projectSummarySchema>
