@@ -56,6 +56,12 @@ npm run docs:check
 ### Start JMCP
 
 1. Populate env from `.env.example`
+   - For xAI, prefer macOS Keychain over `.env`:
+
+```bash
+security add-generic-password -a "$USER" -s JMCP_XAI_API_KEY -w 'your-rotated-key'
+```
+
 2. Start the control plane:
 
 ```bash
@@ -101,3 +107,4 @@ If the share panel shows `LAN fallback active`, the QR codes still work on the s
 - Overnight execution only works if the laptop stays powered, awake, online, and authenticated.
 - The bridge currently uses your local `gh` authentication as the practical v1 path. GitHub App credentials remain the preferred hardening path and can be layered in next.
 - Telegram voice notes are stored immediately, but fully automatic voice execution still depends on a configured local transcription command.
+- If `JMCP_XAI_API_KEY` is not present in the environment, the control plane automatically looks for a macOS Keychain item with service `JMCP_XAI_API_KEY`.

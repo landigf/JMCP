@@ -1,5 +1,10 @@
+import { execFile as execFileCallback } from "node:child_process"
+import os from "node:os"
 import path from "node:path"
+import { promisify } from "node:util"
 import { z } from "zod"
+
+const execFile = promisify(execFileCallback)
 
 function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
   if (value === undefined) {
@@ -32,6 +37,8 @@ const controlPlaneEnvSchema = z.object({
   JMCP_VOICE_TRANSCRIBE_COMMAND: z.string().optional(),
   JMCP_VOICE_TTS_COMMAND: z.string().optional(),
   JMCP_XAI_API_KEY: z.string().optional(),
+  JMCP_XAI_KEYCHAIN_SERVICE: z.string().default("JMCP_XAI_API_KEY"),
+  JMCP_XAI_KEYCHAIN_ACCOUNT: z.string().optional(),
   JMCP_XAI_MODEL: z.string().default("grok-4-0709"),
   JMCP_XAI_BASE_URL: z.string().default("https://api.x.ai/v1"),
 })
@@ -70,11 +77,16 @@ const bridgeEnvSchema = z.object({
 
 export type ControlPlaneConfig = Omit<
   z.infer<typeof controlPlaneEnvSchema>,
-  "JMCP_CONTROL_PLANE_DB_PATH" | "JMCP_AUTORUN_ENABLED" | "JMCP_VOICE_ASSET_DIR"
+  | "JMCP_CONTROL_PLANE_DB_PATH"
+  | "JMCP_AUTORUN_ENABLED"
+  | "JMCP_VOICE_ASSET_DIR"
+  | "JMCP_XAI_KEYCHAIN_ACCOUNT"
 > & {
   JMCP_CONTROL_PLANE_DB_PATH: string
   JMCP_AUTORUN_ENABLED: boolean
   JMCP_VOICE_ASSET_DIR: string
+  JMCP_XAI_KEYCHAIN_ACCOUNT: string
+  JMCP_XAI_API_KEY_SOURCE: "env" | "keychain" | "none"
 }
 export type WebConfig = z.infer<typeof webEnvSchema>
 export type BridgeConfig = Omit<
@@ -94,6 +106,64 @@ export function getControlPlaneConfig(env: NodeJS.ProcessEnv = process.env): Con
       parsed.JMCP_CONTROL_PLANE_DB_PATH ?? path.join(dataDir, "jmcp.sqlite"),
     JMCP_AUTORUN_ENABLED: parseBoolean(parsed.JMCP_AUTORUN_ENABLED, true),
     JMCP_VOICE_ASSET_DIR: parsed.JMCP_VOICE_ASSET_DIR ?? path.join(dataDir, "voice"),
+    JMCP_XAI_KEYCHAIN_ACCOUNT:
+      parsed.JMCP_XAI_KEYCHAIN_ACCOUNT ?? env.USER ?? os.userInfo().username,
+    JMCP_XAI_API_KEY_SOURCE: parsed.JMCP_XAI_API_KEY ? "env" : "none",
+  }
+}
+
+export type ResolveControlPlaneConfigOptions = {
+  keychainLookup?: (input: { service: string; account: string }) => Promise<string | null>
+}
+
+async function loadKeychainSecret(input: {
+  service: string
+  account: string
+}): Promise<string | null> {
+  if (process.platform !== "darwin") {
+    return null
+  }
+
+  try {
+    const { stdout } = await execFile("security", [
+      "find-generic-password",
+      "-a",
+      input.account,
+      "-s",
+      input.service,
+      "-w",
+    ])
+    const value = stdout.trim()
+    return value ? value : null
+  } catch {
+    return null
+  }
+}
+
+export async function resolveControlPlaneConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  options: ResolveControlPlaneConfigOptions = {},
+): Promise<ControlPlaneConfig> {
+  const config = getControlPlaneConfig(env)
+
+  if (config.JMCP_XAI_API_KEY) {
+    return config
+  }
+
+  const keychainLookup = options.keychainLookup ?? loadKeychainSecret
+  const keychainSecret = await keychainLookup({
+    service: config.JMCP_XAI_KEYCHAIN_SERVICE,
+    account: config.JMCP_XAI_KEYCHAIN_ACCOUNT,
+  })
+
+  if (!keychainSecret) {
+    return config
+  }
+
+  return {
+    ...config,
+    JMCP_XAI_API_KEY: keychainSecret,
+    JMCP_XAI_API_KEY_SOURCE: "keychain",
   }
 }
 

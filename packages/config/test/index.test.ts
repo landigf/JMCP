@@ -1,11 +1,49 @@
 import { describe, expect, it } from "vitest"
-import { getBridgeConfig, getControlPlaneConfig, getWebConfig } from "../src/index.js"
+import {
+  getBridgeConfig,
+  getControlPlaneConfig,
+  getWebConfig,
+  resolveControlPlaneConfig,
+} from "../src/index.js"
 
 describe("config", () => {
   it("parses control plane defaults", () => {
     const config = getControlPlaneConfig({})
     expect(config.JMCP_CONTROL_PLANE_PORT).toBe(4000)
     expect(config.JMCP_AUTORUN_ENABLED).toBe(true)
+    expect(config.JMCP_XAI_API_KEY_SOURCE).toBe("none")
+  })
+
+  it("prefers the xAI key from env", async () => {
+    const config = await resolveControlPlaneConfig(
+      {
+        JMCP_XAI_API_KEY: "env-key",
+      },
+      {
+        keychainLookup: async () => "keychain-key",
+      },
+    )
+
+    expect(config.JMCP_XAI_API_KEY).toBe("env-key")
+    expect(config.JMCP_XAI_API_KEY_SOURCE).toBe("env")
+  })
+
+  it("loads the xAI key from Keychain when env is missing", async () => {
+    const config = await resolveControlPlaneConfig(
+      {
+        USER: "landigf",
+      },
+      {
+        keychainLookup: async ({ service, account }) => {
+          expect(service).toBe("JMCP_XAI_API_KEY")
+          expect(account).toBe("landigf")
+          return "keychain-key"
+        },
+      },
+    )
+
+    expect(config.JMCP_XAI_API_KEY).toBe("keychain-key")
+    expect(config.JMCP_XAI_API_KEY_SOURCE).toBe("keychain")
   })
 
   it("parses web defaults", () => {
