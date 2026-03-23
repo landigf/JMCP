@@ -51,9 +51,14 @@ export function createControlPlaneRuntime(config: ControlPlaneConfig) {
   const nightlyTimer = setInterval(() => {
     void service.tickNightlyScheduler()
   }, 15_000)
+  const executorHealthTimer = setInterval(() => {
+    void service.tickExecutorHealth()
+  }, 30_000)
+  void service.tickExecutorHealth()
 
   app.addHook("onClose", async () => {
     clearInterval(nightlyTimer)
+    clearInterval(executorHealthTimer)
     await store.close()
   })
 

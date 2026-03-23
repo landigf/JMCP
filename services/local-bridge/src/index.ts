@@ -6,34 +6,53 @@ import { ClaudeCodeExecutor, type ExecutorAdapter, MockExecutorAdapter } from ".
 const config = getBridgeConfig()
 const client = new ControlPlaneClient(config)
 const executor = createExecutor()
+const BRIDGE_HEARTBEAT_INTERVAL_MS = 30_000
 
 async function main(): Promise<void> {
-  const hello = await client.hello()
-  console.log(`JMCP local-bridge connected as ${hello.executor.name}`)
-
   const activeRuns = new Map<string, Promise<void>>()
+  let executorId: string | null = null
+  let executorName: string | null = null
+  let lastHelloAt = 0
 
   for (;;) {
-    while (activeRuns.size < config.JMCP_BRIDGE_MAX_PARALLEL_RUNS) {
-      const claimed = await client.claim(hello.executor.id)
-
-      if (claimed.event === "noop") {
-        break
+    try {
+      if (!executorId || Date.now() - lastHelloAt >= BRIDGE_HEARTBEAT_INTERVAL_MS) {
+        const hello = await client.hello()
+        if (executorId !== hello.executor.id || executorName !== hello.executor.name) {
+          console.log(`JMCP local-bridge connected as ${hello.executor.name}`)
+        }
+        executorId = hello.executor.id
+        executorName = hello.executor.name
+        lastHelloAt = Date.now()
       }
 
-      const promise = handleClaim(hello.executor.id, claimed)
-        .catch(async (error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error)
-          await client.sendEvent(hello.executor.id, claimed.taskRun.id, {
-            event: "task.blocked",
-            message,
-          })
-        })
-        .finally(() => {
-          activeRuns.delete(claimed.taskRun.id)
-        })
+      while (activeRuns.size < config.JMCP_BRIDGE_MAX_PARALLEL_RUNS && executorId) {
+        const claimed = await client.claim(executorId)
 
-      activeRuns.set(claimed.taskRun.id, promise)
+        if (claimed.event === "noop") {
+          break
+        }
+
+        const claimedExecutorId = executorId
+        const promise = handleClaim(claimedExecutorId, claimed)
+          .catch(async (error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error)
+            await client.sendEvent(claimedExecutorId, claimed.taskRun.id, {
+              event: "task.blocked",
+              message,
+            })
+          })
+          .finally(() => {
+            activeRuns.delete(claimed.taskRun.id)
+          })
+
+        activeRuns.set(claimed.taskRun.id, promise)
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`JMCP local-bridge loop error: ${message}`)
+      executorId = null
+      executorName = null
     }
 
     await Promise.race([

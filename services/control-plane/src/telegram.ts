@@ -54,6 +54,29 @@ function normalizeProjectRef(input: string): string {
   return input.trim().toLowerCase()
 }
 
+function isGreetingMessage(input: string): boolean {
+  return /^(hi|hello|hey|ciao|yo|ping|test|ok|okay|thanks|thank you|cool|nice)[!. ]*$/i.test(
+    input.trim(),
+  )
+}
+
+function looksActionableWorkRequest(input: string): boolean {
+  const trimmed = input.trim()
+  if (!trimmed || isGreetingMessage(trimmed)) {
+    return false
+  }
+
+  if (
+    /\b(todo|fix|build|implement|create|write|update|change|improve|design|review|ship|open|connect|queue|run|save|draft|prepare|add|remove|debug|investigate|refactor)\b/i.test(
+      trimmed,
+    )
+  ) {
+    return true
+  }
+
+  return trimmed.length >= 40
+}
+
 export class TelegramPollingBot {
   readonly #config: ControlPlaneConfig
   readonly #service: ControlPlaneService
@@ -247,6 +270,17 @@ export class TelegramPollingBot {
       }
 
       if (!handled) {
+        if (!focusedProject || !looksActionableWorkRequest(text)) {
+          await this.#sendMessage(
+            chatId,
+            focusedProject
+              ? `Focused on ${focusedProject.githubOwner}/${focusedProject.githubRepo}. Ask for status, TODOs, website, or send a concrete work request and Jarvis will structure it.`
+              : "Jarvis did not turn that into work automatically. Open a project first, or send a concrete request.",
+            focusedProject ? this.#buildProjectActionRows(focusedProject.id) : undefined,
+          )
+          return
+        }
+
         await this.#runProjectCommand(chatId, text)
       }
       return
@@ -2066,6 +2100,7 @@ export class TelegramPollingBot {
           '- If the user describes a large product direction or many features, choose "epic".',
           '- If the user wants everything queued to start, choose "runall".',
           '- If the user asks for ideas Jarvis suggested, choose "proposals".',
+          '- If the user is only greeting Jarvis, acknowledging, or sending a non-actionable short message, choose "help" instead of run/todo/epic.',
           "- Use projectRef when a project is explicit. Use the focused project if the message is clearly about it.",
           '- If asking about all projects, set scope to "all" or "workspace" as appropriate.',
           `Focused project: ${focusedProject ? `${focusedProject.githubOwner}/${focusedProject.githubRepo}` : "none"}.`,

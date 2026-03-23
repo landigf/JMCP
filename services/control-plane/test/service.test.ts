@@ -8,7 +8,7 @@ import { CompositeNotificationDispatcher } from "../src/notifications.js"
 import { ControlPlaneService } from "../src/service.js"
 import { FileWorkspaceStore } from "../src/store.js"
 
-async function createService() {
+async function createHarness() {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "jmcp-control-plane-"))
   const currentHour = new Date().getHours()
   const config = getControlPlaneConfig({
@@ -18,13 +18,19 @@ async function createService() {
     JMCP_NIGHTLY_START_HOUR: String(currentHour),
     JMCP_NIGHTLY_END_HOUR: String((currentHour + 1) % 24),
   })
-
-  return new ControlPlaneService({
-    store: new FileWorkspaceStore(dataDir),
+  const store = new FileWorkspaceStore(dataDir)
+  const service = new ControlPlaneService({
+    store,
     feeds: new InMemoryFeedBus(),
     notifications: new CompositeNotificationDispatcher(config),
     config,
   })
+
+  return { service, store }
+}
+
+async function createService() {
+  return (await createHarness()).service
 }
 
 describe("control plane service", () => {
@@ -388,5 +394,73 @@ describe("control plane service", () => {
 
     expect(linked.linkedProjectId).toBe(project.id)
     expect(stored?.linkedProjectId).toBe(project.id)
+  })
+
+  it("re-queues stale executor runs instead of leaving them stuck forever", async () => {
+    const { service, store } = await createHarness()
+    const project = await service.createProject({
+      name: "Papers",
+      githubOwner: "landigf",
+      githubRepo: "Papers",
+      summary: "Paper-sharing social network",
+      defaultBranch: "main",
+      nightlyEnabled: true,
+    })
+
+    const todoResult = await service.createTodo(project.id, {
+      title: "Search and discovery skeleton",
+      details: null,
+      nightly: false,
+      runAfter: null,
+    })
+
+    const executor = await service.registerBridge({
+      token: "bridge-token",
+      name: "Claude Max Laptop",
+      kind: "claude_code",
+      hostLabel: "laptop",
+      capabilities: ["project-chat"],
+    })
+
+    const claimed = await service.claimBridgeTask(executor.id)
+    expect(claimed?.taskRun.status).toBe("planning")
+
+    const ninetyOneSecondsAgo = new Date(Date.now() - 91_000).toISOString()
+
+    await service.recordBridgeEvent({
+      token: "bridge-token",
+      executorId: executor.id,
+      taskRunId: claimed?.taskRun.id ?? "",
+      event: "task.progress",
+      message: "Still running",
+      step: {
+        kind: "executor",
+        status: "running",
+        title: "Execution pass",
+        body: null,
+      },
+    })
+
+    const snapshotBefore = await service.getProjectSummary(project.id)
+    expect(snapshotBefore?.taskRuns.find((run) => run.id === claimed?.taskRun.id)?.status).toBe(
+      "running",
+    )
+
+    await store.mutate((snapshot) => {
+      const staleExecutor = snapshot.executors.find((entry) => entry.id === executor.id)
+      if (staleExecutor) {
+        staleExecutor.lastSeenAt = ninetyOneSecondsAgo
+      }
+    })
+
+    await service.tickExecutorHealth()
+
+    const summary = await service.getProjectSummary(project.id)
+    const recoveredRun = summary?.taskRuns.find((run) => run.id === claimed?.taskRun.id)
+    const linkedTodo = summary?.todos.find((todo) => todo.id === todoResult?.todo?.id)
+
+    expect(recoveredRun?.status).toBe("queued")
+    expect(recoveredRun?.executorId).toBeNull()
+    expect(linkedTodo?.status).toBe("ready")
   })
 })

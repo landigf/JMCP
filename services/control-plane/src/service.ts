@@ -301,7 +301,9 @@ const openTaskRunStatuses = [
   "blocked",
 ] as const
 
+const executorOwnedRunStatuses = ["planning", "running", "validating", "merging"] as const
 const trackedTodoStatuses = ["queued", "ready", "in_progress", "blocked"] as const
+const EXECUTOR_STALE_AFTER_MS = 90_000
 
 const workStopWords = new Set([
   "the",
@@ -512,8 +514,28 @@ function isOpenTaskRunStatus(status: TaskRun["status"]): boolean {
   return openTaskRunStatuses.includes(status as (typeof openTaskRunStatuses)[number])
 }
 
+function isExecutorOwnedRunStatus(status: TaskRun["status"]): boolean {
+  return executorOwnedRunStatuses.includes(status as (typeof executorOwnedRunStatuses)[number])
+}
+
 function isTrackedTodo(todo: TodoItem): boolean {
   return todo.approvalStatus !== "rejected" && isTrackedTodoStatus(todo.status)
+}
+
+function parseTimestampMs(value: string | null | undefined): number {
+  if (!value) {
+    return 0
+  }
+
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+function isExecutorStale(executor: Executor, nowMs: number): boolean {
+  return (
+    executor.status === "online" &&
+    nowMs - parseTimestampMs(executor.lastSeenAt) >= EXECUTOR_STALE_AFTER_MS
+  )
 }
 
 function createFeedEvent(
@@ -2070,6 +2092,11 @@ export class ControlPlaneService {
       }
 
       const timestamp = nowIso()
+      const executor = draft.executors.find((entry) => entry.id === input.executorId)
+      if (executor) {
+        executor.status = "online"
+        executor.lastSeenAt = timestamp
+      }
       currentRun.updatedAt = timestamp
 
       if (input.branchName) {
@@ -2456,6 +2483,96 @@ export class ControlPlaneService {
         ),
       )
     }
+  }
+
+  async tickExecutorHealth(): Promise<void> {
+    const pendingNotifications: Notification[] = []
+
+    await this.#store.mutate((snapshot) => {
+      const timestamp = nowIso()
+      const nowMs = Date.now()
+      const staleExecutors = snapshot.executors.filter((executor) =>
+        isExecutorStale(executor, nowMs),
+      )
+
+      if (staleExecutors.length === 0) {
+        return
+      }
+
+      const staleExecutorIds = new Set(staleExecutors.map((executor) => executor.id))
+
+      for (const executor of staleExecutors) {
+        executor.status = "offline"
+      }
+
+      for (const run of snapshot.taskRuns) {
+        if (
+          !run.executorId ||
+          !staleExecutorIds.has(run.executorId) ||
+          !isExecutorOwnedRunStatus(run.status)
+        ) {
+          continue
+        }
+
+        const previousExecutorId = run.executorId
+        run.executorId = null
+        run.status = "queued"
+        run.updatedAt = timestamp
+        run.resultSummary =
+          "Jarvis lost contact with the previous laptop executor and re-queued this run automatically."
+        this.#feeds.publish(createFeedEvent("task.run.updated", run.projectId, run))
+
+        if (run.sourceTodoId) {
+          const linkedTodo = snapshot.todos.find((entry) => entry.id === run.sourceTodoId)
+          if (linkedTodo && !["done", "cancelled"].includes(linkedTodo.status)) {
+            linkedTodo.status = "ready"
+            linkedTodo.updatedAt = timestamp
+            linkedTodo.systemNote =
+              "Re-queued automatically after the previous laptop executor session disappeared."
+            this.#feeds.publish(createFeedEvent("todo.updated", linkedTodo.projectId, linkedTodo))
+          }
+        }
+
+        pendingNotifications.push(
+          notificationSchema.parse({
+            id: nanoid(),
+            projectId: run.projectId,
+            type: "task_update",
+            title: `Run recovered: ${run.objective}`,
+            body: "Jarvis lost contact with the laptop executor. The run was re-queued automatically and will resume when the bridge reconnects.",
+            channel: "in_app",
+            href: `/projects/${run.projectId}#run-${run.id}`,
+            createdAt: timestamp,
+            readAt: null,
+          }),
+        )
+
+        this.#feeds.publish(
+          createFeedEvent("run.retrying", run.projectId, {
+            taskRunId: run.id,
+            message: `Executor ${previousExecutorId} went stale. Jarvis re-queued the run.`,
+          }),
+        )
+      }
+
+      for (const notification of pendingNotifications) {
+        snapshot.notifications.unshift(notification)
+        this.#feeds.publish(
+          createFeedEvent("notification.created", notification.projectId, notification),
+        )
+      }
+    })
+
+    if (pendingNotifications.length === 0) {
+      return
+    }
+
+    const refreshed = await this.#store.getSnapshot()
+    await Promise.all(
+      pendingNotifications.map((notification) =>
+        this.#notifications.deliver(notification, refreshed),
+      ),
+    )
   }
 
   async ingestVoice(input: VoiceIngestInput): Promise<VoiceIngestResponse> {
