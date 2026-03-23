@@ -10,10 +10,13 @@ import { FileWorkspaceStore } from "../src/store.js"
 
 async function createService() {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "jmcp-control-plane-"))
+  const currentHour = new Date().getHours()
   const config = getControlPlaneConfig({
     JMCP_CONTROL_PLANE_DATA_DIR: dataDir,
     JMCP_TELEGRAM_BOT_TOKEN: "",
     JMCP_TELEGRAM_CHAT_ID: "",
+    JMCP_NIGHTLY_START_HOUR: String(currentHour),
+    JMCP_NIGHTLY_END_HOUR: String((currentHour + 1) % 24),
   })
 
   return new ControlPlaneService({
@@ -207,5 +210,108 @@ describe("control plane service", () => {
 
     expect(proposal?.source).toBe("assistant")
     expect(proposal?.approvalStatus).toBe("pending")
+  })
+
+  it("queues overnight todos sequentially instead of scheduling the whole project at once", async () => {
+    const service = await createService()
+    const project = await service.createProject({
+      name: "Jarvis",
+      githubOwner: "landigf",
+      githubRepo: "JMCP",
+      summary: "Operator workspace",
+      defaultBranch: "main",
+      nightlyEnabled: true,
+    })
+
+    await service.createTodo(project.id, {
+      title: "Nightly task one",
+      details: null,
+      nightly: true,
+      runAfter: null,
+    })
+    await service.createTodo(project.id, {
+      title: "Nightly task two",
+      details: null,
+      nightly: true,
+      runAfter: null,
+    })
+
+    await service.tickNightlyScheduler()
+    const summary = await service.getProjectSummary(project.id)
+    const readyTodos = summary?.todos.filter((todo) => todo.status === "ready") ?? []
+    const queuedRuns = summary?.taskRuns.filter((run) => run.status === "queued") ?? []
+
+    expect(readyTodos).toHaveLength(1)
+    expect(queuedRuns).toHaveLength(1)
+  })
+
+  it("uses last-edit-wins when two overnight tasks clearly ask for the same thing", async () => {
+    const service = await createService()
+    const project = await service.createProject({
+      name: "Jarvis",
+      githubOwner: "landigf",
+      githubRepo: "JMCP",
+      summary: "Operator workspace",
+      defaultBranch: "main",
+      nightlyEnabled: true,
+    })
+
+    const older = await service.createTodo(project.id, {
+      title: "Add project recap filters to the dashboard",
+      details: "Create recap filters in the dashboard.",
+      nightly: true,
+      runAfter: null,
+    })
+    await service.createTodo(project.id, {
+      title: "Update the dashboard with the final project recap filters",
+      details: "Use the final recap filter version in the same dashboard view.",
+      nightly: true,
+      runAfter: null,
+    })
+
+    await service.tickNightlyScheduler()
+    const summary = await service.getProjectSummary(project.id)
+    const olderTodo = summary?.todos.find((todo) => todo.id === older?.todo?.id)
+
+    expect(olderTodo?.status).toBe("cancelled")
+    expect(olderTodo?.systemNote).toContain("Superseded")
+  })
+
+  it("blocks conflicting overnight tasks when JMCP is not confident about the tie-breaker", async () => {
+    const service = await createService()
+    const project = await service.createProject({
+      name: "Jarvis",
+      githubOwner: "landigf",
+      githubRepo: "JMCP",
+      summary: "Operator workspace",
+      defaultBranch: "main",
+      nightlyEnabled: true,
+    })
+
+    await service.createTodo(project.id, {
+      title: "Enable auto-merge for recap PRs",
+      details: null,
+      nightly: true,
+      runAfter: null,
+    })
+    await service.createTodo(project.id, {
+      title: "Disable auto-merge for recap PRs",
+      details: null,
+      nightly: true,
+      runAfter: null,
+    })
+
+    await service.tickNightlyScheduler()
+    const summary = await service.getProjectSummary(project.id)
+    const blockedTodos = summary?.todos.filter((todo) => todo.status === "blocked") ?? []
+    const dashboard = await service.getDashboardSnapshot()
+    const conflictNotice = dashboard.notifications.find(
+      (notification) =>
+        notification.projectId === project.id &&
+        notification.title.includes("Nightly queue conflict"),
+    )
+
+    expect(blockedTodos).toHaveLength(2)
+    expect(conflictNotice).toBeTruthy()
   })
 })

@@ -34,6 +34,9 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
   const pendingProposals = project.todos.filter(
     (todo) => todo.source === "assistant" && todo.approvalStatus === "pending",
   )
+  const blockedTodos = project.todos.filter(
+    (todo) => todo.approvalStatus === "approved" && todo.status === "blocked",
+  )
   const readyTodos = project.todos.filter(
     (todo) => todo.approvalStatus === "approved" && ["queued", "ready"].includes(todo.status),
   )
@@ -62,7 +65,7 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
             <span>Runs active</span>
           </div>
           <div className="metric-card">
-            <strong>{blockedRuns.length + pendingProposals.length}</strong>
+            <strong>{blockedRuns.length + pendingProposals.length + blockedTodos.length}</strong>
             <span>Need attention</span>
           </div>
         </div>
@@ -122,6 +125,30 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
 
           <div className="panel stack-tight">
             <div className="lane-header">
+              <h2>Queue conflicts</h2>
+              <span>{blockedTodos.length}</span>
+            </div>
+            {blockedTodos.length === 0 ? (
+              <p className="muted">
+                If two overnight tasks pull the project in different directions, JMCP will pause
+                them here.
+              </p>
+            ) : (
+              blockedTodos.map((todo) => (
+                <div className="todo-card" id={`todo-${todo.id}`} key={todo.id}>
+                  <div className="event">
+                    <strong>{todo.title}</strong>
+                    <span>blocked</span>
+                  </div>
+                  {todo.details ? <p>{todo.details}</p> : null}
+                  {todo.systemNote ? <p className="muted">{todo.systemNote}</p> : null}
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="panel stack-tight">
+            <div className="lane-header">
               <h2>Do now</h2>
               <span>{readyTodos.length}</span>
             </div>
@@ -135,6 +162,7 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
                     <span>{todo.status}</span>
                   </div>
                   {todo.details ? <p>{todo.details}</p> : null}
+                  {todo.systemNote ? <p className="muted">{todo.systemNote}</p> : null}
                   <TodoRunButton projectId={project.project.id} todoId={todo.id} />
                 </div>
               ))

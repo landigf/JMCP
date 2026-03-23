@@ -147,6 +147,7 @@ export const todoItemSchema = z.object({
   projectId: z.string(),
   title: z.string(),
   details: z.string().nullable(),
+  systemNote: z.string().nullable().default(null),
   status: todoStatusSchema,
   source: z.enum(["chat", "manual", "nightly", "telegram", "assistant"]),
   approvalStatus: todoApprovalStatusSchema.default("approved"),

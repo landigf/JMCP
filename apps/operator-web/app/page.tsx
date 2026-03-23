@@ -22,6 +22,9 @@ export default async function HomePage() {
   const blocked = dashboard.taskRuns
     .filter((run) => ["blocked", "needs_approval"].includes(run.status))
     .slice(0, 6)
+  const blockedTodos = dashboard.todos
+    .filter((todo) => todo.approvalStatus === "approved" && todo.status === "blocked")
+    .slice(0, 6)
   const proposed = dashboard.todos
     .filter((todo) => todo.source === "assistant" && todo.approvalStatus === "pending")
     .slice(0, 6)
@@ -53,7 +56,7 @@ export default async function HomePage() {
             <span>Runs moving</span>
           </div>
           <div className="metric-card">
-            <strong>{blocked.length + proposed.length}</strong>
+            <strong>{blocked.length + proposed.length + blockedTodos.length}</strong>
             <span>Need a decision</span>
           </div>
         </div>
@@ -203,6 +206,29 @@ export default async function HomePage() {
                 >
                   <strong>{todo.title}</strong>
                   <p>{todo.details ?? "Assistant proposal waiting for review."}</p>
+                </Link>
+              ))
+            )}
+          </div>
+
+          <div className="panel stack-tight">
+            <div className="lane-header">
+              <h2>Queue conflicts</h2>
+              <span>{blockedTodos.length}</span>
+            </div>
+            {blockedTodos.length === 0 ? (
+              <p className="muted">
+                Overnight conflicts that need your confirmation will show up here.
+              </p>
+            ) : (
+              blockedTodos.map((todo) => (
+                <Link
+                  className="notification-card"
+                  href={`/projects/${todo.projectId}#todo-${todo.id}`}
+                  key={todo.id}
+                >
+                  <strong>{todo.title}</strong>
+                  <p>{todo.systemNote ?? todo.details ?? "Nightly queue conflict needs review."}</p>
                 </Link>
               ))
             )}

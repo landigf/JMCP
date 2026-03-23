@@ -110,7 +110,11 @@ function buildTelegramKeyboard(
     }
   }
 
-  if (notification.type === "project_update" && href) {
+  if (
+    notification.type === "project_update" &&
+    notification.title === "JMCP proposed follow-up work" &&
+    href
+  ) {
     const parsed = href.match(/\/projects\/([^#]+)#todo-(.+)$/)
     if (parsed) {
       rows.push([

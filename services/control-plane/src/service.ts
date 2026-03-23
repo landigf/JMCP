@@ -80,12 +80,205 @@ const openTaskRunStatuses = [
 
 const trackedTodoStatuses = ["queued", "ready", "in_progress", "blocked"] as const
 
+const workStopWords = new Set([
+  "the",
+  "a",
+  "an",
+  "and",
+  "or",
+  "to",
+  "for",
+  "of",
+  "in",
+  "on",
+  "with",
+  "from",
+  "by",
+  "into",
+  "over",
+  "after",
+  "before",
+  "then",
+  "that",
+  "this",
+  "same",
+  "thing",
+  "feature",
+  "page",
+  "flow",
+  "task",
+  "todo",
+  "project",
+  "repo",
+])
+
+const actionAliasToGroup = new Map<string, string>([
+  ["add", "add"],
+  ["create", "add"],
+  ["build", "add"],
+  ["implement", "add"],
+  ["introduce", "add"],
+  ["write", "add"],
+  ["enable", "enable"],
+  ["turn", "enable"],
+  ["fix", "modify"],
+  ["update", "modify"],
+  ["change", "modify"],
+  ["modify", "modify"],
+  ["refactor", "modify"],
+  ["rework", "modify"],
+  ["improve", "modify"],
+  ["polish", "modify"],
+  ["tune", "modify"],
+  ["replace", "replace"],
+  ["switch", "replace"],
+  ["migrate", "replace"],
+  ["rename", "rename"],
+  ["remove", "remove"],
+  ["delete", "remove"],
+  ["drop", "remove"],
+  ["revert", "remove"],
+  ["disable", "disable"],
+])
+
 function normalizeWorkLabel(value: string): string {
   return value
     .toLowerCase()
     .replace(/[`"'.,!?;:()[\]{}]+/g, " ")
     .replace(/\s+/g, " ")
     .trim()
+}
+
+function normalizeWorkToken(token: string): string {
+  if (token.endsWith("ies") && token.length > 4) {
+    return `${token.slice(0, -3)}y`
+  }
+
+  if (token.endsWith("s") && !token.endsWith("ss") && token.length > 3) {
+    return token.slice(0, -1)
+  }
+
+  return token
+}
+
+function extractWorkTokens(value: string): string[] {
+  return normalizeWorkLabel(value)
+    .split(" ")
+    .map((token) => normalizeWorkToken(token))
+    .filter((token) => token.length > 2 && !workStopWords.has(token))
+}
+
+function extractPrimaryAction(value: string): string | null {
+  for (const token of extractWorkTokens(value)) {
+    const group = actionAliasToGroup.get(token)
+    if (group) {
+      return group
+    }
+  }
+
+  return null
+}
+
+function extractTargetTokens(value: string): string[] {
+  return extractWorkTokens(value).filter((token) => !actionAliasToGroup.has(token))
+}
+
+function similarityScore(left: string[], right: string[]): number {
+  const leftSet = new Set(left)
+  const rightSet = new Set(right)
+  const union = new Set([...leftSet, ...rightSet])
+
+  if (union.size === 0) {
+    return 0
+  }
+
+  let intersection = 0
+  for (const token of leftSet) {
+    if (rightSet.has(token)) {
+      intersection += 1
+    }
+  }
+
+  return intersection / union.size
+}
+
+function sharedTokenCount(left: string[], right: string[]): number {
+  const leftSet = new Set(left)
+  const rightSet = new Set(right)
+  let intersection = 0
+
+  for (const token of leftSet) {
+    if (rightSet.has(token)) {
+      intersection += 1
+    }
+  }
+
+  return intersection
+}
+
+function coverageScore(base: string[], candidate: string[]): number {
+  const baseSet = new Set(base)
+
+  if (baseSet.size === 0) {
+    return 0
+  }
+
+  return sharedTokenCount(base, candidate) / baseSet.size
+}
+
+type NightlyTodoRelation =
+  | { kind: "none" }
+  | { kind: "superseded"; reason: string }
+  | { kind: "conflict"; reason: string }
+
+function compareNightlyTodos(older: TodoItem, newer: TodoItem): NightlyTodoRelation {
+  const olderText = `${older.title} ${older.details ?? ""}`
+  const newerText = `${newer.title} ${newer.details ?? ""}`
+  const olderTargetTokens = extractTargetTokens(olderText)
+  const newerTargetTokens = extractTargetTokens(newerText)
+  const targetSimilarity = similarityScore(olderTargetTokens, newerTargetTokens)
+  const labelSimilarity = similarityScore(
+    extractWorkTokens(olderText),
+    extractWorkTokens(newerText),
+  )
+  const targetSharedTokens = sharedTokenCount(olderTargetTokens, newerTargetTokens)
+  const olderCoveredByNewer = coverageScore(olderTargetTokens, newerTargetTokens)
+  const olderAction = extractPrimaryAction(olderText)
+  const newerAction = extractPrimaryAction(newerText)
+  const oppositeActions =
+    (olderAction === "add" && newerAction === "remove") ||
+    (olderAction === "remove" && newerAction === "add") ||
+    (olderAction === "enable" && newerAction === "disable") ||
+    (olderAction === "disable" && newerAction === "enable")
+
+  if (
+    normalizeWorkLabel(older.title) === normalizeWorkLabel(newer.title) ||
+    labelSimilarity >= 0.86 ||
+    (!oppositeActions &&
+      targetSharedTokens >= 2 &&
+      olderCoveredByNewer >= 0.74 &&
+      (targetSimilarity >= 0.34 || labelSimilarity >= 0.25) &&
+      (olderAction === newerAction || !olderAction || !newerAction || newerAction === "modify"))
+  ) {
+    return {
+      kind: "superseded",
+      reason: `Superseded by newer overnight task: ${newer.title}`,
+    }
+  }
+
+  if (
+    targetSimilarity >= 0.58 &&
+    (oppositeActions || (olderAction && newerAction && olderAction !== newerAction))
+  ) {
+    return {
+      kind: "conflict",
+      reason: `Potential conflict with "${newer.title}". JMCP was not confident enough to resolve it automatically.`,
+    }
+  }
+
+  return {
+    kind: "none",
+  }
 }
 
 function isTrackedTodoStatus(status: TodoItem["status"]): boolean {
@@ -1207,40 +1400,131 @@ export class ControlPlaneService {
       return
     }
 
+    const pendingNotifications: Notification[] = []
+
     await this.#store.mutate((snapshot) => {
       const timestamp = nowIso()
-      const queuedNightlyTodos = snapshot.todos.filter((todo) => {
-        const policy = this.#getAutomationPolicy(snapshot, todo.projectId)
+      const projectIds = snapshot.projects.map((project) => project.id)
+
+      for (const projectId of projectIds) {
+        const policy = this.#getAutomationPolicy(snapshot, projectId)
         if (!policy || policy.paused || !policy.nightlyEnabled) {
-          return false
+          continue
         }
 
-        return (
-          todo.nightly &&
-          todo.approvalStatus === "approved" &&
-          todo.status === "queued" &&
-          !snapshot.taskRuns.some(
-            (run) =>
-              run.sourceTodoId === todo.id &&
-              ["queued", "planning", "running", "validating", "merging", "needs_approval"].includes(
-                run.status,
-              ),
-          )
+        const projectHasOpenRun = snapshot.taskRuns.some(
+          (run) => run.projectId === projectId && isOpenTaskRunStatus(run.status),
         )
-      })
+        if (projectHasOpenRun) {
+          continue
+        }
 
-      for (const todo of queuedNightlyTodos) {
-        todo.status = "ready"
-        todo.updatedAt = timestamp
+        const queuedNightlyTodos = snapshot.todos
+          .filter(
+            (todo) =>
+              todo.projectId === projectId &&
+              todo.nightly &&
+              todo.approvalStatus === "approved" &&
+              todo.status === "queued",
+          )
+          .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+
+        if (queuedNightlyTodos.length === 0) {
+          continue
+        }
+
+        const blockedIds = new Set<string>()
+
+        for (let newerIndex = 1; newerIndex < queuedNightlyTodos.length; newerIndex += 1) {
+          const newer = queuedNightlyTodos[newerIndex]
+
+          if (blockedIds.has(newer.id) || newer.status !== "queued") {
+            continue
+          }
+
+          for (let olderIndex = 0; olderIndex < newerIndex; olderIndex += 1) {
+            const older = queuedNightlyTodos[olderIndex]
+
+            if (blockedIds.has(older.id) || older.status !== "queued") {
+              continue
+            }
+
+            const relation = compareNightlyTodos(older, newer)
+
+            if (relation.kind === "superseded") {
+              older.status = "cancelled"
+              older.systemNote = relation.reason
+              older.updatedAt = timestamp
+              blockedIds.add(older.id)
+              this.#feeds.publish(createFeedEvent("todo.updated", older.projectId, older))
+              continue
+            }
+
+            if (relation.kind === "conflict") {
+              older.status = "blocked"
+              older.systemNote = relation.reason
+              older.updatedAt = timestamp
+              newer.status = "blocked"
+              newer.systemNote = `Potential conflict with "${older.title}". JMCP paused both overnight tasks for manual confirmation.`
+              newer.updatedAt = timestamp
+              blockedIds.add(older.id)
+              blockedIds.add(newer.id)
+              this.#feeds.publish(createFeedEvent("todo.updated", older.projectId, older))
+              this.#feeds.publish(createFeedEvent("todo.updated", newer.projectId, newer))
+              pendingNotifications.push(
+                notificationSchema.parse({
+                  id: nanoid(),
+                  projectId,
+                  type: "project_update",
+                  title: "Nightly queue conflict needs confirmation",
+                  body: `${older.title} conflicts with ${newer.title}. JMCP paused both tasks instead of guessing.`,
+                  channel: "in_app",
+                  href: `/projects/${projectId}#todo-${newer.id}`,
+                  createdAt: timestamp,
+                  readAt: null,
+                }),
+              )
+              break
+            }
+          }
+        }
+
+        const nextTodo = queuedNightlyTodos.find((todo) => todo.status === "queued")
+        if (!nextTodo) {
+          continue
+        }
+
+        nextTodo.status = "ready"
+        nextTodo.systemNote =
+          queuedNightlyTodos.length > 1
+            ? `Nightly queue prepared. JMCP will run this first, then continue sequentially.`
+            : nextTodo.systemNote
+        nextTodo.updatedAt = timestamp
         this.#queueTaskRun(snapshot, {
-          projectId: todo.projectId,
-          sourceTodoId: todo.id,
-          objective: todo.title,
+          projectId: nextTodo.projectId,
+          sourceTodoId: nextTodo.id,
+          objective: nextTodo.title,
           priority: 25,
         })
-        this.#feeds.publish(createFeedEvent("todo.updated", todo.projectId, todo))
+        this.#feeds.publish(createFeedEvent("todo.updated", nextTodo.projectId, nextTodo))
+      }
+
+      for (const notification of pendingNotifications) {
+        snapshot.notifications.unshift(notification)
+        this.#feeds.publish(
+          createFeedEvent("notification.created", notification.projectId, notification),
+        )
       }
     })
+
+    if (pendingNotifications.length > 0) {
+      const refreshed = await this.#store.getSnapshot()
+      await Promise.all(
+        pendingNotifications.map((notification) =>
+          this.#notifications.deliver(notification, refreshed),
+        ),
+      )
+    }
   }
 
   async ingestVoice(input: VoiceIngestInput): Promise<VoiceIngestResponse> {
@@ -1479,6 +1763,7 @@ export class ControlPlaneService {
     input: {
       title: string
       details: string | null
+      systemNote?: string | null
       nightly: boolean
       source: TodoItem["source"]
       approvalStatus?: TodoItem["approvalStatus"]
@@ -1493,6 +1778,7 @@ export class ControlPlaneService {
       projectId,
       title: input.title,
       details: input.details,
+      systemNote: input.systemNote ?? null,
       status: "queued",
       source: input.source,
       approvalStatus: input.approvalStatus ?? "approved",
