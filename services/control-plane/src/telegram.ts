@@ -305,19 +305,32 @@ export class TelegramPollingBot {
       return
     }
 
-    const todo = await this.#service.createTodo(project.id, {
+    const result = await this.#service.createTodo(project.id, {
       title,
       details: null,
       nightly: false,
       runAfter: null,
     })
 
-    if (!todo) {
+    if (!result) {
       await this.#sendMessage(chatId, "Failed to save the TODO.")
       return
     }
 
-    await this.#sendMessage(chatId, `Saved TODO: ${todo.title}`, [
+    const todo = result.todo
+
+    if (!todo) {
+      await this.#sendMessage(chatId, "That task is already being tracked in this project.")
+      return
+    }
+
+    const message = result.activeRunId
+      ? `Saved TODO behind the active run: ${todo.title}`
+      : result.created
+        ? `Saved TODO: ${todo.title}`
+        : `Already tracked: ${todo.title}`
+
+    await this.#sendMessage(chatId, message, [
       [
         {
           text: "Run now",

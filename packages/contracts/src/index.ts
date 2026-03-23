@@ -411,6 +411,14 @@ export const createTodoInputSchema = z.object({
   runAfter: z.string().nullable().default(null),
 })
 
+export const createTodoResultSchema = z.object({
+  todo: todoItemSchema.nullable(),
+  created: z.boolean(),
+  duplicateTodoId: z.string().nullable().default(null),
+  duplicateTaskRunId: z.string().nullable().default(null),
+  activeRunId: z.string().nullable().default(null),
+})
+
 export const voiceIngestInputSchema = z.object({
   projectId: z.string().nullable().default(null),
   source: z.enum(["pwa", "telegram"]),
@@ -590,6 +598,7 @@ export type CreateProjectInput = z.infer<typeof createProjectInputSchema>
 export type ProjectMessageInput = z.infer<typeof projectMessageInputSchema>
 export type ProjectMessageResponse = z.infer<typeof projectMessageResponseSchema>
 export type CreateTodoInput = z.infer<typeof createTodoInputSchema>
+export type CreateTodoResult = z.infer<typeof createTodoResultSchema>
 export type VoiceIngestInput = z.infer<typeof voiceIngestInputSchema>
 export type VoiceIngestResponse = z.infer<typeof voiceIngestResponseSchema>
 export type ApprovalAction = z.infer<typeof approvalActionSchema>

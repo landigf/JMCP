@@ -1,8 +1,10 @@
 import type {
   CreateProjectInput,
   CreateTodoInput,
+  CreateTodoResult,
   DashboardSnapshot,
   Notification,
+  Project,
   ProjectMessageInput,
   ProjectMessageResponse,
   ProjectSummary,
@@ -53,7 +55,7 @@ export async function getRunDetail(projectId: string, runId: string): Promise<Ru
   return parseJsonResponse(response, "Failed to load run detail")
 }
 
-export async function createProject(input: CreateProjectInput): Promise<void> {
+export async function createProject(input: CreateProjectInput): Promise<Project> {
   const response = await fetch(`${CONTROL_PLANE_URL}/projects`, {
     method: "POST",
     headers: {
@@ -62,9 +64,7 @@ export async function createProject(input: CreateProjectInput): Promise<void> {
     body: JSON.stringify(input),
   })
 
-  if (!response.ok) {
-    throw new Error("Failed to create project")
-  }
+  return parseJsonResponse(response, "Failed to create project")
 }
 
 export async function postProjectMessage(
@@ -82,7 +82,10 @@ export async function postProjectMessage(
   return parseJsonResponse(response, "Failed to send message")
 }
 
-export async function createTodo(projectId: string, input: CreateTodoInput): Promise<void> {
+export async function createTodo(
+  projectId: string,
+  input: CreateTodoInput,
+): Promise<CreateTodoResult> {
   const response = await fetch(`${CONTROL_PLANE_URL}/projects/${projectId}/todos`, {
     method: "POST",
     headers: {
@@ -91,9 +94,7 @@ export async function createTodo(projectId: string, input: CreateTodoInput): Pro
     body: JSON.stringify(input),
   })
 
-  if (!response.ok) {
-    throw new Error("Failed to create TODO")
-  }
+  return parseJsonResponse(response, "Failed to create TODO")
 }
 
 export async function runTodoNow(projectId: string, todoId: string): Promise<TaskRun> {

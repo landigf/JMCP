@@ -14,13 +14,21 @@ export function TodoForm(props: { projectId: string }) {
     setStatus(null)
 
     try {
-      await createTodo(props.projectId, {
+      const result = await createTodo(props.projectId, {
         title: String(formData.get("title") ?? ""),
         details: String(formData.get("details") ?? "") || null,
         nightly: Boolean(formData.get("nightly")),
         runAfter: null,
       })
-      setStatus("Saved to the queue.")
+
+      if (result.duplicateTaskRunId || result.duplicateTodoId) {
+        setStatus("Already tracked in this project.")
+      } else if (result.activeRunId) {
+        setStatus("Saved behind the current run.")
+      } else {
+        setStatus("Saved to the queue.")
+      }
+
       startTransition(() => {
         router.refresh()
       })

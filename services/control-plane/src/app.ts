@@ -113,13 +113,13 @@ export function createControlPlaneRuntime(config: ControlPlaneConfig) {
   app.post("/projects/:projectId/todos", async (request, reply) => {
     const params = request.params as { projectId: string }
     const input = createTodoInputSchema.parse(request.body)
-    const todo = await service.createTodo(params.projectId, input)
+    const result = await service.createTodo(params.projectId, input)
 
-    if (!todo) {
+    if (!result) {
       return reply.code(404).send({ message: "Project not found" })
     }
 
-    return reply.code(201).send(todo)
+    return reply.code(result.created ? 201 : 200).send(result)
   })
 
   app.post("/projects/:projectId/todos/:todoId/run", async (request, reply) => {

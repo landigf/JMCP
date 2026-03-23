@@ -10,10 +10,12 @@ import {
   type BridgeProgressEvent,
   type CreateProjectInput,
   type CreateTodoInput,
+  type CreateTodoResult,
   type DashboardSnapshot,
   type Executor,
   type FeedEvent,
   type GitHubWebhookEnvelope,
+  type MobileReply,
   type Notification,
   notificationSchema,
   type Project,
@@ -35,7 +37,13 @@ import {
 } from "@jmcp/contracts"
 import { redactSecrets } from "@jmcp/security"
 import { nanoid } from "nanoid"
-import { classifyMessage, createMobileReply, getMessageText } from "./intents.js"
+import {
+  classifyMessage,
+  createAlreadyTrackedReply,
+  createMobileReply,
+  createQueuedBehindActiveRunReply,
+  getMessageText,
+} from "./intents.js"
 import type {
   FeedPublisher,
   NotificationDispatcher,
@@ -56,6 +64,34 @@ function parsePullRequestNumber(url: string | null | undefined): number | null {
 
   const match = url.match(/\/pull\/(\d+)(?:\/|$)/)
   return match ? Number(match[1]) : null
+}
+
+const openTaskRunStatuses = [
+  "queued",
+  "planning",
+  "running",
+  "validating",
+  "merging",
+  "needs_approval",
+  "blocked",
+] as const
+
+const trackedTodoStatuses = ["queued", "ready", "in_progress", "blocked"] as const
+
+function normalizeWorkLabel(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[`"'.,!?;:()[\]{}]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function isTrackedTodoStatus(status: TodoItem["status"]): boolean {
+  return trackedTodoStatuses.includes(status as (typeof trackedTodoStatuses)[number])
+}
+
+function isOpenTaskRunStatus(status: TaskRun["status"]): boolean {
+  return openTaskRunStatuses.includes(status as (typeof openTaskRunStatuses)[number])
 }
 
 function createFeedEvent(
@@ -185,6 +221,16 @@ export class ControlPlaneService {
 
   async createProject(input: CreateProjectInput): Promise<Project> {
     return this.#store.mutate((snapshot) => {
+      const existing = snapshot.projects.find(
+        (entry) =>
+          entry.githubOwner.toLowerCase() === input.githubOwner.toLowerCase() &&
+          entry.githubRepo.toLowerCase() === input.githubRepo.toLowerCase(),
+      )
+
+      if (existing) {
+        return existing
+      }
+
       const timestamp = nowIso()
       const project = projectSchema.parse({
         id: nanoid(),
@@ -297,6 +343,7 @@ export class ControlPlaneService {
 
     let createdTodoId: string | null = null
     let createdTaskRunId: string | null = null
+    let reply: MobileReply | null = null
 
     await this.#store.mutate((draft) => {
       const timestamp = nowIso()
@@ -316,42 +363,82 @@ export class ControlPlaneService {
         createdAt: timestamp,
       })
 
-      if (intent.kind === "save_todo" || intent.kind === "schedule_nightly") {
-        const todo: TodoItem = {
-          id: nanoid(),
-          projectId,
+      const duplicateTodo = this.#findTrackedTodo(draft, projectId, title)
+      const duplicateRun = this.#findOpenTaskRun(draft, projectId, title)
+      const activeRun = this.#findOpenTaskRun(draft, projectId)
+
+      if (duplicateTodo || duplicateRun) {
+        createdTodoId = duplicateTodo?.id ?? null
+        createdTaskRunId = duplicateRun?.id ?? null
+        reply = this.#createDuplicateReply({
+          project,
+          title,
+          existingTodo: duplicateTodo,
+          existingRun: duplicateRun,
+        })
+      } else if (intent.kind === "save_todo" || intent.kind === "schedule_nightly") {
+        const todo = this.#createTodoRecord(projectId, {
           title,
           details: text,
-          status: "queued",
           source: intent.kind === "schedule_nightly" ? "nightly" : "chat",
           nightly: intent.kind === "schedule_nightly",
           runAfter: null,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        }
+        })
 
         createdTodoId = todo.id
         draft.todos.unshift(todo)
         this.#feeds.publish(createFeedEvent("todo.created", projectId, todo))
-      }
+        reply = createMobileReply({
+          intentKind: intent.kind,
+          project,
+          executorAvailable,
+          title,
+          runId: createdTaskRunId,
+          todoId: createdTodoId,
+        })
+      } else if (intent.kind === "run_now" && activeRun) {
+        const todo = this.#createTodoRecord(projectId, {
+          title,
+          details: text,
+          source: "chat",
+          nightly: false,
+          runAfter: null,
+        })
 
-      if (intent.kind === "run_now") {
+        createdTodoId = todo.id
+        draft.todos.unshift(todo)
+        this.#feeds.publish(createFeedEvent("todo.created", projectId, todo))
+        reply = createQueuedBehindActiveRunReply({
+          project,
+          title,
+          activeRunId: activeRun.id,
+          todoId: todo.id,
+        })
+      } else if (intent.kind === "run_now") {
         createdTaskRunId = this.#queueTaskRun(draft, {
           projectId,
           objective: title,
           sourceTodoId: null,
           priority: 20,
         }).id
+        reply = createMobileReply({
+          intentKind: intent.kind,
+          project,
+          executorAvailable,
+          title,
+          runId: createdTaskRunId,
+          todoId: createdTodoId,
+        })
+      } else {
+        reply = createMobileReply({
+          intentKind: intent.kind,
+          project,
+          executorAvailable,
+          title,
+          runId: createdTaskRunId,
+          todoId: createdTodoId,
+        })
       }
-
-      const reply = createMobileReply({
-        intentKind: intent.kind,
-        project,
-        executorAvailable,
-        title,
-        runId: createdTaskRunId,
-        todoId: createdTodoId,
-      })
 
       conversation.messages.push({
         id: nanoid(),
@@ -371,20 +458,22 @@ export class ControlPlaneService {
 
     return {
       intent,
-      reply: createMobileReply({
-        intentKind: intent.kind,
-        project: aggregate.project,
-        executorAvailable,
-        title,
-        runId: createdTaskRunId,
-        todoId: createdTodoId,
-      }),
+      reply:
+        reply ??
+        createMobileReply({
+          intentKind: intent.kind,
+          project: aggregate.project,
+          executorAvailable,
+          title,
+          runId: createdTaskRunId,
+          todoId: createdTodoId,
+        }),
       createdTodoId,
       createdTaskRunId,
     }
   }
 
-  async createTodo(projectId: string, input: CreateTodoInput): Promise<TodoItem | null> {
+  async createTodo(projectId: string, input: CreateTodoInput): Promise<CreateTodoResult | null> {
     const snapshot = await this.#store.getSnapshot()
     const aggregate = this.#getProjectAggregate(snapshot, projectId)
 
@@ -393,24 +482,38 @@ export class ControlPlaneService {
     }
 
     return this.#store.mutate((draft) => {
-      const timestamp = nowIso()
-      const todo: TodoItem = {
-        id: nanoid(),
-        projectId,
+      const duplicateTodo = this.#findTrackedTodo(draft, projectId, input.title)
+      const duplicateRun = this.#findOpenTaskRun(draft, projectId, input.title)
+
+      if (duplicateTodo || duplicateRun) {
+        return {
+          todo: duplicateTodo,
+          created: false,
+          duplicateTodoId: duplicateTodo?.id ?? null,
+          duplicateTaskRunId: duplicateRun?.id ?? null,
+          activeRunId: null,
+        }
+      }
+
+      const todo = this.#createTodoRecord(projectId, {
         title: input.title,
         details: input.details,
-        status: "queued",
         source: input.nightly ? "nightly" : "manual",
         nightly: input.nightly,
         runAfter: input.runAfter,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      }
+      })
 
       draft.todos.unshift(todo)
       this.#feeds.publish(createFeedEvent("todo.created", projectId, todo))
 
-      if (this.#getAutomationPolicy(draft, projectId)?.autoRunOnTodo && !input.nightly) {
+      let activeRunId: string | null = null
+      const activeRun = this.#findOpenTaskRun(draft, projectId)
+
+      if (
+        this.#getAutomationPolicy(draft, projectId)?.autoRunOnTodo &&
+        !input.nightly &&
+        !activeRun
+      ) {
         todo.status = "ready"
         this.#queueTaskRun(draft, {
           projectId,
@@ -418,9 +521,17 @@ export class ControlPlaneService {
           objective: todo.title,
           priority: 30,
         })
+      } else if (activeRun) {
+        activeRunId = activeRun.id
       }
 
-      return todo
+      return {
+        todo,
+        created: true,
+        duplicateTodoId: null,
+        duplicateTaskRunId: null,
+        activeRunId,
+      }
     })
   }
 
@@ -437,6 +548,19 @@ export class ControlPlaneService {
 
       if (!todo) {
         return null
+      }
+
+      const existingRun =
+        draft.taskRuns.find(
+          (entry) =>
+            entry.projectId === projectId &&
+            isOpenTaskRunStatus(entry.status) &&
+            (entry.sourceTodoId === todo.id ||
+              normalizeWorkLabel(entry.objective) === normalizeWorkLabel(todo.title)),
+        ) ?? null
+
+      if (existingRun) {
+        return existingRun
       }
 
       todo.status = "ready"
@@ -1164,6 +1288,82 @@ export class ControlPlaneService {
     projectId: string,
   ): AutomationPolicy | undefined {
     return snapshot.automationPolicies.find((entry) => entry.projectId === projectId)
+  }
+
+  #findTrackedTodo(
+    snapshot: Awaited<ReturnType<WorkspaceStore["getSnapshot"]>>,
+    projectId: string,
+    title: string,
+  ): TodoItem | null {
+    const normalizedTitle = normalizeWorkLabel(title)
+
+    return (
+      snapshot.todos.find(
+        (entry) =>
+          entry.projectId === projectId &&
+          isTrackedTodoStatus(entry.status) &&
+          normalizeWorkLabel(entry.title) === normalizedTitle,
+      ) ?? null
+    )
+  }
+
+  #findOpenTaskRun(
+    snapshot: Awaited<ReturnType<WorkspaceStore["getSnapshot"]>>,
+    projectId: string,
+    objective?: string | null,
+  ): TaskRun | null {
+    const normalizedObjective = objective ? normalizeWorkLabel(objective) : null
+
+    return (
+      snapshot.taskRuns.find(
+        (entry) =>
+          entry.projectId === projectId &&
+          isOpenTaskRunStatus(entry.status) &&
+          (normalizedObjective === null ||
+            normalizeWorkLabel(entry.objective) === normalizedObjective),
+      ) ?? null
+    )
+  }
+
+  #createTodoRecord(
+    projectId: string,
+    input: {
+      title: string
+      details: string | null
+      nightly: boolean
+      source: TodoItem["source"]
+      runAfter: string | null
+    },
+  ): TodoItem {
+    const timestamp = nowIso()
+
+    return {
+      id: nanoid(),
+      projectId,
+      title: input.title,
+      details: input.details,
+      status: "queued",
+      source: input.source,
+      nightly: input.nightly,
+      runAfter: input.runAfter,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }
+  }
+
+  #createDuplicateReply(args: {
+    project: Project
+    title: string
+    existingTodo: TodoItem | null
+    existingRun: TaskRun | null
+  }): MobileReply {
+    return createAlreadyTrackedReply({
+      project: args.project,
+      title: args.title,
+      todoId: args.existingTodo?.id ?? null,
+      runId: args.existingRun?.id ?? null,
+      blocked: args.existingRun?.status === "blocked",
+    })
   }
 
   async #emitRunNotification(

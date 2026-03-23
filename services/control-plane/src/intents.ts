@@ -119,3 +119,65 @@ export function createMobileReply(args: {
       }
   }
 }
+
+export function createAlreadyTrackedReply(args: {
+  project: Project
+  title: string
+  runId?: string | null
+  todoId?: string | null
+  blocked?: boolean
+}): MobileReply {
+  const links = []
+
+  if (args.runId) {
+    links.push({
+      label: "Open run",
+      href: `/projects/${args.project.id}#run-${args.runId}`,
+    })
+  }
+
+  if (args.todoId) {
+    links.push({
+      label: "Open TODO",
+      href: `/projects/${args.project.id}#todo-${args.todoId}`,
+    })
+  }
+
+  return {
+    status: "Already tracked in this project.",
+    whatChanged: [`JMCP kept the existing work item for ${args.title}.`],
+    needsDecision: args.blocked
+      ? ["Resolve or retry the blocked work instead of creating a duplicate task."]
+      : [],
+    next: [
+      args.runId
+        ? "Open the current run to follow progress, approve, or retry it."
+        : "Open the queued TODO when you want to work on it.",
+    ],
+    links,
+  }
+}
+
+export function createQueuedBehindActiveRunReply(args: {
+  project: Project
+  title: string
+  activeRunId: string
+  todoId: string
+}): MobileReply {
+  return {
+    status: "Project already has active work.",
+    whatChanged: [`Queued ${args.title} behind the current run.`],
+    needsDecision: [],
+    next: ["Let the current run finish, then launch this queued TODO with one tap."],
+    links: [
+      {
+        label: "Open current run",
+        href: `/projects/${args.project.id}#run-${args.activeRunId}`,
+      },
+      {
+        label: "Open queued TODO",
+        href: `/projects/${args.project.id}#todo-${args.todoId}`,
+      },
+    ],
+  }
+}

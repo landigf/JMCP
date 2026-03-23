@@ -16,6 +16,17 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
   const activeRuns = project.taskRuns.filter((run) =>
     ["planning", "running", "validating", "merging"].includes(run.status),
   )
+  const openRuns = project.taskRuns.filter((run) =>
+    [
+      "queued",
+      "planning",
+      "running",
+      "validating",
+      "merging",
+      "needs_approval",
+      "blocked",
+    ].includes(run.status),
+  )
   const blockedRuns = project.taskRuns.filter((run) =>
     ["blocked", "needs_approval"].includes(run.status),
   )
@@ -53,6 +64,15 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
 
       <section className="grid-main">
         <div className="stack">
+          {openRuns.length > 0 ? (
+            <div className="panel stack-tight">
+              <strong>Execution lane is occupied</strong>
+              <p className="muted">
+                JMCP keeps one live workstream per project. New chat requests are deduped if they
+                match existing work, otherwise they are queued behind the current run.
+              </p>
+            </div>
+          ) : null}
           <ProjectAutomationControls
             nightlyEnabled={project.automationPolicy.nightlyEnabled}
             paused={project.automationPolicy.paused}
