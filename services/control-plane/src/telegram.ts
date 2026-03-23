@@ -77,11 +77,16 @@ export class TelegramPollingBot {
     const commands = [
       ["start", "Open the Jarvis Telegram cockpit"],
       ["projects", "List connected projects"],
+      ["focus", "Focus this chat on a specific project"],
       ["project", "Show the focused project dashboard"],
+      ["dashboard", "Alias for the focused project dashboard"],
       ["repos", "List GitHub repos from this laptop account"],
       ["open", "Open owner/repo or a GitHub URL in Jarvis"],
       ["newrepo", "Create a new GitHub repo and connect it"],
       ["status", "Workspace or project status"],
+      ["next", "Show the next actionable work"],
+      ["decisions", "Show items waiting for your decision"],
+      ["proposals", "Show ideas proposed by Jarvis"],
       ["todos", "Queued TODOs, grouped by project"],
       ["runs", "Running, blocked, and approval-needed work"],
       ["run", "Queue an immediate task on a project"],
@@ -238,7 +243,11 @@ export class TelegramPollingBot {
       case "/projects":
         await this.#sendProjects(chatId)
         return
+      case "/focus":
+        await this.#focusProject(chatId, remainder)
+        return
       case "/project":
+      case "/dashboard":
         await this.#sendProjectDashboard(chatId, remainder)
         return
       case "/inbox":
@@ -246,6 +255,15 @@ export class TelegramPollingBot {
         return
       case "/status":
         await this.#sendStatus(chatId, remainder)
+        return
+      case "/next":
+        await this.#sendNext(chatId, remainder)
+        return
+      case "/decisions":
+        await this.#sendDecisions(chatId, remainder)
+        return
+      case "/proposals":
+        await this.#sendProposals(chatId, remainder)
         return
       case "/todos":
         await this.#sendTodos(chatId, remainder)
@@ -274,7 +292,7 @@ export class TelegramPollingBot {
       default:
         await this.#sendMessage(
           chatId,
-          "Unknown command. Use /start, /projects, /project, /repos, /open, /newrepo, /status, /todos, /runs, /run, /runall, /todo, /epic, /pause, /resume, /nightly, or /inbox.",
+          "Unknown command. Use /start, /projects, /focus, /project, /repos, /open, /newrepo, /status, /next, /decisions, /proposals, /todos, /runs, /run, /runall, /todo, /epic, /pause, /resume, /nightly, or /inbox.",
         )
     }
   }
@@ -305,8 +323,12 @@ export class TelegramPollingBot {
           { text: "Status", callback_data: "nav_status" },
         ],
         [
+          { text: "Next", callback_data: "nav_next" },
           { text: "TODOs", callback_data: "nav_todos" },
-          { text: "Runs", callback_data: "nav_runs" },
+        ],
+        [
+          { text: "Decisions", callback_data: "nav_decisions" },
+          { text: "Proposals", callback_data: "nav_proposals" },
         ],
         ...(projects[0]
           ? [
@@ -402,6 +424,24 @@ export class TelegramPollingBot {
         ],
       ]),
     )
+  }
+
+  async #focusProject(chatId: string, remainder: string): Promise<void> {
+    const reference = remainder.trim()
+    if (!reference) {
+      await this.#sendMessage(chatId, "Usage: /focus owner/repo")
+      return
+    }
+
+    const dashboard = await this.#service.getDashboardSnapshot()
+    const project = resolveProject(reference, dashboard.projects)
+    if (!project) {
+      await this.#sendMessage(chatId, `Project not found: ${reference}`)
+      return
+    }
+
+    await this.#service.linkTelegramThreadToProject(chatId, project.id)
+    await this.#sendProjectDashboard(chatId, project.id)
   }
 
   async #openProject(chatId: string, remainder: string): Promise<void> {
@@ -521,6 +561,7 @@ export class TelegramPollingBot {
     const pendingProposals = summary.todos.filter(
       (todo) => todo.source === "assistant" && todo.approvalStatus === "pending",
     )
+    const pendingDecisions = summary.epicTasks.filter((task) => task.status === "needs_decision")
 
     await this.#sendMessage(
       chatId,
@@ -529,6 +570,7 @@ export class TelegramPollingBot {
         `Queued TODOs: ${queuedTodos.length}`,
         `Running: ${runningRuns.length}`,
         `Blocked or approval-needed: ${blockedRuns.length}`,
+        `Needs decision: ${pendingDecisions.length}`,
         `Jarvis proposals: ${pendingProposals.length}`,
         queuedTodos[0] ? `Next TODO: ${queuedTodos[0].title}` : "Next TODO: none",
         runningRuns[0] ? `Active run: ${runningRuns[0].objective}` : "Active run: none",
@@ -539,14 +581,21 @@ export class TelegramPollingBot {
           { text: "Run all", callback_data: `project_runall:${project.id}` },
         ],
         [
+          { text: "Next", callback_data: `project_next:${project.id}` },
+          { text: "Decisions", callback_data: `project_decisions:${project.id}` },
+        ],
+        [
           { text: "TODOs", callback_data: `project_todos:${project.id}` },
           { text: "Runs", callback_data: `project_runs:${project.id}` },
         ],
         [
+          { text: "Proposals", callback_data: `project_proposals:${project.id}` },
           {
             text: summary.automationPolicy.paused ? "Resume" : "Pause",
             callback_data: `${summary.automationPolicy.paused ? "project_resume" : "project_pause"}:${project.id}`,
           },
+        ],
+        [
           {
             text: `Nightly ${summary.automationPolicy.nightlyEnabled ? "on" : "off"}`,
             callback_data: `project_nightly_toggle:${project.id}`,
@@ -625,12 +674,16 @@ export class TelegramPollingBot {
           .join("\n"),
         [
           [
+            { text: "Next", callback_data: "nav_next" },
             { text: "TODOs", callback_data: "nav_todos" },
-            { text: "Runs", callback_data: "nav_runs" },
+          ],
+          [
+            { text: "Decisions", callback_data: "nav_decisions" },
+            { text: "Proposals", callback_data: "nav_proposals" },
           ],
           [
             { text: "Run all queued", callback_data: "workspace_runall" },
-            { text: "Projects", callback_data: "nav_projects" },
+            { text: "Runs", callback_data: "nav_runs" },
           ],
         ],
       )
@@ -643,6 +696,259 @@ export class TelegramPollingBot {
       return
     }
     await this.#sendProjectDashboard(chatId, `${project.githubOwner}/${project.githubRepo}`)
+  }
+
+  async #sendNext(chatId: string, remainder: string): Promise<void> {
+    const explicitProject = remainder.trim()
+    if (explicitProject) {
+      const dashboard = await this.#service.getDashboardSnapshot()
+      const project = resolveProject(explicitProject, dashboard.projects)
+      if (!project) {
+        await this.#sendMessage(chatId, `Project not found: ${explicitProject}`)
+        return
+      }
+      await this.#service.linkTelegramThreadToProject(chatId, project.id)
+      const summary = await this.#service.getProjectSummary(project.id)
+      if (!summary) {
+        await this.#sendMessage(chatId, "Project summary not available.")
+        return
+      }
+
+      const activeRun = summary.taskRuns.find((run) =>
+        ["planning", "running", "validating", "merging"].includes(run.status),
+      )
+      const blockedRun = summary.taskRuns.find((run) =>
+        ["blocked", "needs_approval"].includes(run.status),
+      )
+      const nextTodo = summary.todos.find((todo) => ["queued", "ready"].includes(todo.status))
+      const nextDecision = summary.epicTasks.find((task) => task.status === "needs_decision")
+      const nextProposal = summary.todos.find(
+        (todo) => todo.source === "assistant" && todo.approvalStatus === "pending",
+      )
+
+      await this.#sendMessage(
+        chatId,
+        [
+          `Next actions for ${summary.project.githubOwner}/${summary.project.githubRepo}`,
+          activeRun ? `Active run: ${activeRun.objective}` : "Active run: none",
+          blockedRun ? `Blocked or approval: ${blockedRun.objective}` : "Blocked or approval: none",
+          nextTodo ? `Next TODO: ${nextTodo.title}` : "Next TODO: none",
+          nextDecision ? `Decision needed: ${nextDecision.title}` : "Decision needed: none",
+          nextProposal ? `Jarvis proposal: ${nextProposal.title}` : "Jarvis proposal: none",
+        ].join("\n"),
+        [
+          [
+            { text: "Run all", callback_data: `project_runall:${project.id}` },
+            { text: "TODOs", callback_data: `project_todos:${project.id}` },
+          ],
+          [
+            { text: "Decisions", callback_data: `project_decisions:${project.id}` },
+            { text: "Proposals", callback_data: `project_proposals:${project.id}` },
+          ],
+        ],
+      )
+      return
+    }
+
+    const dashboard = await this.#service.getDashboardSnapshot()
+    const lines = dashboard.projects
+      .map((project) => {
+        const activeRun = dashboard.taskRuns.find(
+          (run) =>
+            run.projectId === project.id &&
+            ["planning", "running", "validating", "merging"].includes(run.status),
+        )
+        const blockedRun = dashboard.taskRuns.find(
+          (run) =>
+            run.projectId === project.id && ["blocked", "needs_approval"].includes(run.status),
+        )
+        const nextTodo = dashboard.todos.find(
+          (todo) => todo.projectId === project.id && ["queued", "ready"].includes(todo.status),
+        )
+        const nextDecision = dashboard.epicTasks.find(
+          (task) => task.projectId === project.id && task.status === "needs_decision",
+        )
+
+        const topItem =
+          blockedRun?.objective ?? activeRun?.objective ?? nextDecision?.title ?? nextTodo?.title
+
+        if (!topItem) {
+          return null
+        }
+
+        return `• ${project.githubRepo}: ${topItem}`
+      })
+      .filter(Boolean)
+      .slice(0, 8)
+
+    if (lines.length === 0) {
+      await this.#sendMessage(chatId, "No next actions right now.")
+      return
+    }
+
+    await this.#sendMessage(chatId, ["Next actions", ...lines].join("\n"), [
+      [
+        { text: "Decisions", callback_data: "nav_decisions" },
+        { text: "Proposals", callback_data: "nav_proposals" },
+      ],
+      [
+        { text: "TODOs", callback_data: "nav_todos" },
+        { text: "Runs", callback_data: "nav_runs" },
+      ],
+    ])
+  }
+
+  async #sendDecisions(chatId: string, remainder: string): Promise<void> {
+    const explicitProject = remainder.trim()
+    if (explicitProject) {
+      const dashboard = await this.#service.getDashboardSnapshot()
+      const project = resolveProject(explicitProject, dashboard.projects)
+      if (!project) {
+        await this.#sendMessage(chatId, `Project not found: ${explicitProject}`)
+        return
+      }
+      await this.#service.linkTelegramThreadToProject(chatId, project.id)
+      const summary = await this.#service.getProjectSummary(project.id)
+      if (!summary) {
+        await this.#sendMessage(chatId, "Project summary not available.")
+        return
+      }
+      const decisions = summary.epicTasks.filter((task) => task.status === "needs_decision")
+      if (decisions.length === 0) {
+        await this.#sendMessage(
+          chatId,
+          `${summary.project.githubOwner}/${summary.project.githubRepo}\nNo pending decisions right now.`,
+          this.#buildProjectActionRows(project.id),
+        )
+        return
+      }
+
+      await this.#sendMessage(
+        chatId,
+        [
+          `Decisions for ${summary.project.githubOwner}/${summary.project.githubRepo}`,
+          ...decisions.slice(0, 8).map((task) => `• ${task.title}`),
+        ].join("\n"),
+        [[{ text: "Open dashboard", url: this.#buildProjectUrl(project.id) }]],
+      )
+      return
+    }
+
+    const dashboard = await this.#service.getDashboardSnapshot()
+    const lines = dashboard.projects
+      .map((project) => {
+        const decisions = dashboard.epicTasks.filter(
+          (task) => task.projectId === project.id && task.status === "needs_decision",
+        )
+        if (decisions.length === 0) {
+          return null
+        }
+        return `${project.githubOwner}/${project.githubRepo} (${decisions.length})\n${decisions
+          .slice(0, 2)
+          .map((task) => `• ${task.title}`)
+          .join("\n")}`
+      })
+      .filter(Boolean)
+      .slice(0, 6)
+
+    if (lines.length === 0) {
+      await this.#sendMessage(chatId, "No pending decisions right now.")
+      return
+    }
+
+    await this.#sendMessage(chatId, ["Pending decisions", ...lines].join("\n"), [
+      [
+        { text: "Next", callback_data: "nav_next" },
+        { text: "Projects", callback_data: "nav_projects" },
+      ],
+    ])
+  }
+
+  async #sendProposals(chatId: string, remainder: string): Promise<void> {
+    const explicitProject = remainder.trim()
+    if (explicitProject) {
+      const dashboard = await this.#service.getDashboardSnapshot()
+      const project = resolveProject(explicitProject, dashboard.projects)
+      if (!project) {
+        await this.#sendMessage(chatId, `Project not found: ${explicitProject}`)
+        return
+      }
+      await this.#service.linkTelegramThreadToProject(chatId, project.id)
+      const summary = await this.#service.getProjectSummary(project.id)
+      if (!summary) {
+        await this.#sendMessage(chatId, "Project summary not available.")
+        return
+      }
+      const proposals = summary.todos.filter(
+        (todo) => todo.source === "assistant" && todo.approvalStatus === "pending",
+      )
+      if (proposals.length === 0) {
+        await this.#sendMessage(
+          chatId,
+          `${summary.project.githubOwner}/${summary.project.githubRepo}\nNo pending Jarvis proposals right now.`,
+          this.#buildProjectActionRows(project.id),
+        )
+        return
+      }
+
+      await this.#sendMessage(
+        chatId,
+        [
+          `Jarvis proposals for ${summary.project.githubOwner}/${summary.project.githubRepo}`,
+          ...proposals.slice(0, 6).map((todo) => `• ${todo.title}`),
+        ].join("\n"),
+        proposals.slice(0, 2).flatMap((todo) => [
+          [
+            { text: "Do now", callback_data: `todo_proposal_now:${project.id}:${todo.id}` },
+            {
+              text: "Overnight",
+              callback_data: `todo_proposal_overnight:${project.id}:${todo.id}`,
+            },
+          ],
+          [{ text: "Reject", callback_data: `todo_proposal_reject:${project.id}:${todo.id}` }],
+        ]),
+      )
+      return
+    }
+
+    const dashboard = await this.#service.getDashboardSnapshot()
+    const grouped = dashboard.projects
+      .map((project) => ({
+        project,
+        proposals: dashboard.todos.filter(
+          (todo) =>
+            todo.projectId === project.id &&
+            todo.source === "assistant" &&
+            todo.approvalStatus === "pending",
+        ),
+      }))
+      .filter((entry) => entry.proposals.length > 0)
+
+    if (grouped.length === 0) {
+      await this.#sendMessage(chatId, "No pending Jarvis proposals right now.")
+      return
+    }
+
+    await this.#sendMessage(
+      chatId,
+      [
+        "Jarvis proposals",
+        ...grouped
+          .slice(0, 6)
+          .flatMap((entry) => [
+            `${entry.project.githubOwner}/${entry.project.githubRepo} (${entry.proposals.length})`,
+            ...entry.proposals.slice(0, 2).map((todo) => `• ${todo.title}`),
+          ]),
+      ].join("\n"),
+      grouped.slice(0, 4).flatMap((entry) => [
+        [
+          {
+            text: `Open ${entry.project.githubRepo.slice(0, 14)}`,
+            callback_data: `project_proposals:${entry.project.id}`,
+          },
+        ],
+      ]),
+    )
   }
 
   async #sendTodos(chatId: string, remainder: string): Promise<void> {
@@ -1035,6 +1341,18 @@ export class TelegramPollingBot {
         await this.#sendRuns(chatId, "")
         break
       }
+      case "nav_next": {
+        await this.#sendNext(chatId, "")
+        break
+      }
+      case "nav_decisions": {
+        await this.#sendDecisions(chatId, "")
+        break
+      }
+      case "nav_proposals": {
+        await this.#sendProposals(chatId, "")
+        break
+      }
       case "repo_open": {
         const [owner, repo] = projectId.split("/")
         if (owner && repo) {
@@ -1070,6 +1388,21 @@ export class TelegramPollingBot {
       case "project_runs": {
         await this.#service.linkTelegramThreadToProject(chatId, projectId)
         await this.#sendRuns(chatId, projectId)
+        break
+      }
+      case "project_next": {
+        await this.#service.linkTelegramThreadToProject(chatId, projectId)
+        await this.#sendNext(chatId, projectId)
+        break
+      }
+      case "project_decisions": {
+        await this.#service.linkTelegramThreadToProject(chatId, projectId)
+        await this.#sendDecisions(chatId, projectId)
+        break
+      }
+      case "project_proposals": {
+        await this.#service.linkTelegramThreadToProject(chatId, projectId)
+        await this.#sendProposals(chatId, projectId)
         break
       }
       case "project_runall": {
@@ -1273,9 +1606,14 @@ export class TelegramPollingBot {
         { text: "Status", callback_data: `project_status:${projectId}` },
       ],
       [
+        { text: "Next", callback_data: `project_next:${projectId}` },
         { text: "TODOs", callback_data: `project_todos:${projectId}` },
-        { text: "Run all", callback_data: `project_runall:${projectId}` },
       ],
+      [
+        { text: "Runs", callback_data: `project_runs:${projectId}` },
+        { text: "Proposals", callback_data: `project_proposals:${projectId}` },
+      ],
+      [{ text: "Run all", callback_data: `project_runall:${projectId}` }],
     ]
   }
 
